@@ -2,22 +2,36 @@ import {
   Controller,
   Post,
   UploadedFile,
+  UploadedFiles,
   UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import {
+  FileFieldsInterceptor,
+  FileInterceptor,
+} from '@nestjs/platform-express';
 import { UploadService } from './upload.service';
-import { S3Service } from '../shared/s3.service';
 
 @Controller('upload')
 export class UploadController {
-  constructor(
-    private readonly uploadService: UploadService,
-    private readonly s3Service: S3Service,
-  ) {}
+  constructor(private readonly uploadService: UploadService) {}
 
   @Post()
-  @UseInterceptors(FileInterceptor('file'))
-  async uploadFile(@UploadedFile() file: Express.MulterS3.File) {
-    return await this.uploadService.processUploadedFile(file);
+  @UseInterceptors(
+    FileFieldsInterceptor([
+      { name: 'cv', maxCount: 1 },
+      { name: 'project_report', maxCount: 1 },
+    ]),
+  )
+  async uploadFile(
+    @UploadedFiles()
+    files: {
+      cv: Express.MulterS3.File[];
+      project_report: Express.MulterS3.File[];
+    },
+  ) {
+    return await this.uploadService.processUploadedFiles(
+      files.cv[0],
+      files.project_report[0],
+    );
   }
 }

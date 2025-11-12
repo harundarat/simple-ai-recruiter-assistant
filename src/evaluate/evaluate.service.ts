@@ -14,6 +14,8 @@ export interface EvaluationJob {
 export class EvaluateService {
   private evaluationJobs: Map<string, EvaluationJob> = new Map();
 
+  constructor() {}
+
   async startEvaluation(request: EvaluateRequestDto) {
     const evaluationId = this.generateEvaluationId();
 

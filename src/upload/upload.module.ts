@@ -16,17 +16,30 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
         storage: multerS3({
           s3: s3Service.getS3Client() as any,
           bucket: configService.getOrThrow<string>('S3_BUCKET_NAME'),
-          key: (req, file, cb) =>
-            cb(null, `${Date.now()}-${file.originalname}`),
+          key: (req, file, cb) => {
+            const prefix = file.fieldname || 'files';
+            const safeName = file.originalname.replace(/\s+/g, '-');
+            cb(null, `${prefix}/${Date.now()}-${safeName}`);
+          },
         }),
         fileFilter: (req, file, cb) => {
-          const isPdf =
-            file.mimetype === 'application/pdf' ||
-            /\.pdf$/i.test(file.originalname);
+          const allowedMimes = [
+            'application/pdf',
+            'text/plain',
+            'application/msword',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          ];
 
-          if (!isPdf) {
+          const filename = file?.originalname ?? '';
+          const isAllowed =
+            allowedMimes.includes(file.mimetype) ||
+            /\.(pdf|txt|docx|doc)$/i.test(filename);
+
+          if (!isAllowed) {
             return cb(
-              new BadRequestException('Only PDF files are allowed'),
+              new BadRequestException(
+                'Only PDF, TXT and DOC/DOCX files are allowed',
+              ),
               false,
             );
           }

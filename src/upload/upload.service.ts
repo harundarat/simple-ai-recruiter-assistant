@@ -5,20 +5,30 @@ import { PrismaService } from 'src/shared/prisma.service';
 export class UploadService {
   constructor(private prismaService: PrismaService) {}
 
-  async processUploadedFile(file: Express.MulterS3.File) {
-    await this.prismaService.cV.create({
+  async processUploadedFiles(
+    cvFile: Express.MulterS3.File,
+    projectReportFile: Express.MulterS3.File,
+  ) {
+    const cvDetail = await this.prismaService.cV.create({
       data: {
-        originalName: file.originalname,
-        hostedName: file.key,
-        url: file.location,
+        original_name: cvFile.originalname,
+        hosted_name: cvFile.key,
+        url: cvFile.location,
       },
     });
+
+    const projectReportDetail = await this.prismaService.projectReport.create({
+      data: {
+        cv_id: cvDetail.id,
+        original_name: projectReportFile.originalname,
+        hosted_name: projectReportFile.key,
+        url: projectReportFile.location,
+      },
+    });
+
     return {
-      id: this.generateFileId(),
-      url: file.location,
-      key: file.key,
-      originalName: file.originalname,
-      size: file.size,
+      cvDetail,
+      projectReportDetail,
       message: 'File uploaded successfully',
     };
   }
@@ -43,9 +53,5 @@ export class UploadService {
     }
 
     callback(null, true);
-  }
-
-  private generateFileId(): string {
-    return `file_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
   }
 }

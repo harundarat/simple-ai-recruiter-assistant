@@ -15,8 +15,18 @@ datasource db {
 }
 
 model CV {
-  id           Int    @id @default(autoincrement())
-  originalName String
-  hostedName   String
-  url          String
+  id            Int             @id @default(autoincrement())
+  original_name String
+  hosted_name   String
+  url           String
+  ProjectReport ProjectReport[]
+}
+
+model ProjectReport {
+  id            Int    @id @default(autoincrement())
+  cv            CV     @relation(fields: [cv_id], references: [id])
+  cv_id         Int
+  original_name String
+  hosted_name   String
+  url           String
 }

@@ -12,5 +12,18 @@ services:
     volumes:
       - db_data:/var/lib/postgresql/data
 
+  chromadb:
+    image: chromadb/chroma:1.1.1.dev25
+    container_name: simple_ai_recruiter_test_chromadb
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+
 volumes:
   db_data:
+  chroma_data:

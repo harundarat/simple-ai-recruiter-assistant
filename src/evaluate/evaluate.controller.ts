@@ -1,5 +1,6 @@
-import { Controller, Post, Body } from '@nestjs/common';
+import { Controller, Post, Body, Get } from '@nestjs/common';
 import { EvaluateService } from './evaluate.service';
+import { LLMService } from 'src/shared/llm.service';
 
 export interface EvaluateRequestDto {
   fileId: string;
@@ -13,7 +14,16 @@ export interface EvaluateRequestDto {
 
 @Controller('evaluate')
 export class EvaluateController {
-  constructor(private readonly evaluateService: EvaluateService) {}
+  constructor(
+    private readonly evaluateService: EvaluateService,
+    private readonly llmService: LLMService,
+  ) {}
+
+  @Get('/hi')
+  async test() {
+    const response = await this.llmService.extractCV(2);
+    return JSON.parse(response);
+  }
 
   @Post()
   async startEvaluation(@Body() evaluateRequest: EvaluateRequestDto) {

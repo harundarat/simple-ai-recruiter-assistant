@@ -14,15 +14,6 @@ export class LLMService {
     });
   }
 
-  async callGeminiFlashLite(params: LLMCallParameters) {
-    const response = await this.gemini.models.generateContent({
-      model: 'gemini-2.5-flash-lite',
-      ...params,
-    });
-
-    return response;
-  }
-
   async callGeminiFlashLiteWithPDF(
     pdfBuffer: Buffer,
     prompt: string,
@@ -55,15 +46,6 @@ export class LLMService {
   async callGeminiFlash(params: LLMCallParameters) {
     const response = await this.gemini.models.generateContent({
       model: 'gemini-2.5-flash',
-      ...params,
-    });
-
-    return response;
-  }
-
-  async callGeminiPro(params: LLMCallParameters) {
-    const response = await this.gemini.models.generateContent({
-      model: 'gemini-2.5-pro',
       ...params,
     });
 

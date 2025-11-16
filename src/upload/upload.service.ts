@@ -3,7 +3,7 @@ import { PrismaService } from 'src/shared/prisma.service';
 
 @Injectable()
 export class UploadService {
-  constructor(private prismaService: PrismaService) { }
+  constructor(private prismaService: PrismaService) {}
 
   async processUploadedFiles(
     cvFile: Express.MulterS3.File,
@@ -32,26 +32,4 @@ export class UploadService {
       message: 'Files uploaded successfully',
     };
   }
-
-  // validateFile(file: Express.Multer.File, callback: any) {
-  //   const allowedExtensions = ['.pdf'];
-  //   const allowedMimeTypes = ['application/pdf'];
-
-  //   const fileExtension = file.originalname
-  //     .toLowerCase()
-  //     .substring(file.originalname.lastIndexOf('.'));
-
-  //   if (!allowedExtensions.includes(fileExtension)) {
-  //     return callback(
-  //       new BadRequestException('Only PDF files are allowed!'),
-  //       false,
-  //     );
-  //   }
-
-  //   if (!allowedMimeTypes.includes(file.mimetype)) {
-  //     return callback(new BadRequestException('Invalid file type!'), false);
-  //   }
-
-  //   callback(null, true);
-  // }
 }

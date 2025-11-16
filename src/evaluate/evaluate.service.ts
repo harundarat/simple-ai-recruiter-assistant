@@ -21,7 +21,7 @@ export class EvaluateService {
     private readonly chromaService: ChromaService,
     private readonly configService: ConfigService,
     @InjectQueue('evaluation') private readonly evaluationQueue: Queue,
-  ) { }
+  ) {}
 
   async startEvaluation(
     jobTitle: string,
@@ -274,7 +274,7 @@ PROJECT EVALUATION RESULTS:
 Based on the above evaluations, provide a comprehensive final synthesis that integrates both CV and project assessment.
 `;
 
-    const response = await this.llmService.callGeminiFlashLite({
+    const response = await this.llmService.callGeminiFlash({
       contents: [
         {
           role: 'user',

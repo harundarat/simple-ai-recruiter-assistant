@@ -4,7 +4,7 @@ services:
     container_name: simple_ai_recruiter_test_db
     restart: always
     ports:
-      - "5432:5432"
+      - '5432:5432'
     environment:
       - POSTGRES_USER=testuser
       - POSTGRES_PASSWORD=testpassword
@@ -17,13 +17,24 @@ services:
     container_name: simple_ai_recruiter_test_chromadb
     restart: always
     ports:
-      - "8000:8000"
+      - '8000:8000'
     volumes:
       - chroma_data:/chroma/chroma
     environment:
       - IS_PERSISTENT=TRUE
       - ANONYMIZED_TELEMETRY=FALSE
 
+  redis:
+    image: redis:7-alpine
+    container_name: simple_ai_recruiter_test_redis
+    restart: always
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
 volumes:
   db_data:
   chroma_data:
+  redis_data:

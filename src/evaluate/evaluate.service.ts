@@ -1,5 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { PrismaService } from 'src/shared/prisma.service';
 import { S3Service } from 'src/shared/s3.service';
 import { LLMService } from 'src/shared/llm.service';
@@ -18,9 +20,94 @@ export class EvaluateService {
     private readonly llmService: LLMService,
     private readonly chromaService: ChromaService,
     private readonly configService: ConfigService,
+    @InjectQueue('evaluation') private readonly evaluationQueue: Queue,
   ) { }
 
   async startEvaluation(
+    jobTitle: string,
+    cvId: number,
+    projectReportId: number,
+  ): Promise<{ id: number }> {
+    // Validate CV and Project Report exist
+    const [cv, projectReport] = await Promise.all([
+      this.prismaService.cV.findUnique({
+        where: { id: cvId },
+      }),
+      this.prismaService.projectReport.findUnique({
+        where: { id: projectReportId },
+      }),
+    ]);
+
+    if (!cv) {
+      throw new BadRequestException('CV not found');
+    }
+
+    if (!projectReport) {
+      throw new BadRequestException('Project Report not found');
+    }
+
+    // Create evaluation record with status 'queued'
+    const evaluation = await this.prismaService.evaluation.create({
+      data: {
+        cv_id: cvId,
+        project_report_id: projectReportId,
+        job_title: jobTitle,
+        status: 'queued',
+      },
+    });
+
+    // Add job to queue
+    await this.evaluationQueue.add('process-evaluation', {
+      evaluationId: evaluation.id,
+      jobTitle,
+      cvId,
+      projectReportId,
+    });
+
+    return { id: evaluation.id };
+  }
+
+  async getEvaluationResult(evaluationId: number) {
+    const evaluation = await this.prismaService.evaluation.findUnique({
+      where: { id: evaluationId },
+    });
+
+    if (!evaluation) {
+      throw new BadRequestException('Evaluation not found');
+    }
+
+    // If status is queued or processing, return minimal info
+    if (evaluation.status === 'queued' || evaluation.status === 'processing') {
+      return {
+        id: evaluation.id,
+        status: evaluation.status,
+      };
+    }
+
+    // If status is failed, include error message
+    if (evaluation.status === 'failed') {
+      return {
+        id: evaluation.id,
+        status: evaluation.status,
+        error_message: evaluation.error_message,
+      };
+    }
+
+    // If status is completed, return full results
+    return {
+      id: evaluation.id,
+      status: evaluation.status,
+      result: {
+        cv_match_rate: evaluation.cv_match_rate,
+        cv_feedback: evaluation.cv_feedback,
+        project_score: evaluation.project_score,
+        project_feedback: evaluation.project_feedback,
+        overall_summary: evaluation.overall_summary,
+      },
+    };
+  }
+
+  async performEvaluation(
     jobTitle: string,
     cvId: number,
     projectReportId: number,

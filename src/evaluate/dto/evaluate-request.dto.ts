@@ -1,5 +1,5 @@
 export class EvaluateRequestDto {
-  title: string;
+  job_title: string;
   cv_id: number;
   project_report_id: number;
 }

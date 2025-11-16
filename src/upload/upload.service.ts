@@ -1,9 +1,9 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { PrismaService } from 'src/shared/prisma.service';
 
 @Injectable()
 export class UploadService {
-  constructor(private prismaService: PrismaService) {}
+  constructor(private prismaService: PrismaService) { }
 
   async processUploadedFiles(
     cvFile: Express.MulterS3.File,
@@ -27,31 +27,31 @@ export class UploadService {
     });
 
     return {
-      cvDetail,
-      projectReportDetail,
-      message: 'File uploaded successfully',
+      cv_id: cvDetail.id,
+      project_report_id: projectReportDetail.id,
+      message: 'Files uploaded successfully',
     };
   }
 
-  validateFile(file: Express.Multer.File, callback: any) {
-    const allowedExtensions = ['.pdf'];
-    const allowedMimeTypes = ['application/pdf'];
+  // validateFile(file: Express.Multer.File, callback: any) {
+  //   const allowedExtensions = ['.pdf'];
+  //   const allowedMimeTypes = ['application/pdf'];
 
-    const fileExtension = file.originalname
-      .toLowerCase()
-      .substring(file.originalname.lastIndexOf('.'));
+  //   const fileExtension = file.originalname
+  //     .toLowerCase()
+  //     .substring(file.originalname.lastIndexOf('.'));
 
-    if (!allowedExtensions.includes(fileExtension)) {
-      return callback(
-        new BadRequestException('Only PDF files are allowed!'),
-        false,
-      );
-    }
+  //   if (!allowedExtensions.includes(fileExtension)) {
+  //     return callback(
+  //       new BadRequestException('Only PDF files are allowed!'),
+  //       false,
+  //     );
+  //   }
 
-    if (!allowedMimeTypes.includes(file.mimetype)) {
-      return callback(new BadRequestException('Invalid file type!'), false);
-    }
+  //   if (!allowedMimeTypes.includes(file.mimetype)) {
+  //     return callback(new BadRequestException('Invalid file type!'), false);
+  //   }
 
-    callback(null, true);
-  }
+  //   callback(null, true);
+  // }
 }

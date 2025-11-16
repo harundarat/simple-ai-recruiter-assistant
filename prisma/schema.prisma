@@ -6,7 +6,6 @@
 
 generator client {
   provider = "prisma-client-js"
-  output   = "../generated/prisma"
 }
 
 datasource db {
@@ -20,13 +19,40 @@ model CV {
   hosted_name   String
   url           String
   ProjectReport ProjectReport[]
+  Evaluation    Evaluation[]
 }
 
 model ProjectReport {
-  id            Int    @id @default(autoincrement())
-  cv            CV     @relation(fields: [cv_id], references: [id])
+  id            Int          @id @default(autoincrement())
+  cv            CV           @relation(fields: [cv_id], references: [id])
   cv_id         Int
   original_name String
   hosted_name   String
   url           String
+  Evaluation    Evaluation[]
+}
+
+enum EvaluationStatus {
+  queued
+  processing
+  completed
+}
+
+model Evaluation {
+  id                Int              @id @default(autoincrement())
+  cv                CV               @relation(fields: [cv_id], references: [id])
+  cv_id             Int
+  projectReport     ProjectReport    @relation(fields: [project_report_id], references: [id])
+  project_report_id Int
+  status            EvaluationStatus @default(queued)
+
+  // Result fields (nullable, populated when status = completed)
+  cv_match_rate    Float?
+  cv_feedback      String? @db.Text
+  project_score    Float?
+  project_feedback String? @db.Text
+  overall_summary  String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }

@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Get } from '@nestjs/common';
+import { Controller, Post, Body, Get, Param, ParseIntPipe } from '@nestjs/common';
 import { EvaluateService } from './evaluate.service';
 import { LLMService } from 'src/shared/llm.service';
 import { EvaluateRequestDto } from './dto/evaluate-request.dto';
@@ -18,9 +18,14 @@ export class EvaluateController {
   @Post()
   async startEvaluation(@Body() evaluateRequest: EvaluateRequestDto) {
     return this.evaluateService.startEvaluation(
-      evaluateRequest.title,
+      evaluateRequest.job_title,
       evaluateRequest.cv_id,
       evaluateRequest.project_report_id,
     );
+  }
+
+  @Get('result/:id')
+  async getEvaluationResult(@Param('id', ParseIntPipe) id: number) {
+    return this.evaluateService.getEvaluationResult(id);
   }
 }

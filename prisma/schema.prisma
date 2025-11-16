@@ -36,6 +36,7 @@ enum EvaluationStatus {
   queued
   processing
   completed
+  failed
 }
 
 model Evaluation {
@@ -44,6 +45,7 @@ model Evaluation {
   cv_id             Int
   projectReport     ProjectReport    @relation(fields: [project_report_id], references: [id])
   project_report_id Int
+  job_title         String
   status            EvaluationStatus @default(queued)
 
   // Result fields (nullable, populated when status = completed)
@@ -52,6 +54,14 @@ model Evaluation {
   project_score    Float?
   project_feedback String? @db.Text
   overall_summary  String? @db.Text
+
+  // Error tracking (for failed jobs)
+  error_message String? @db.Text
+  retry_count   Int     @default(0)
+
+  // Timing tracking (for monitoring)
+  started_at   DateTime?
+  completed_at DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

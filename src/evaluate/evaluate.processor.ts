@@ -27,7 +27,9 @@ export class EvaluationProcessor extends WorkerHost {
   async process(job: Job<EvaluationJobData>): Promise<void> {
     const { evaluationId, jobTitle, cvId, projectReportId } = job.data;
 
-    this.logger.log(`Processing evaluation ${evaluationId} for job: ${jobTitle}`);
+    this.logger.log(
+      `Processing evaluation ${evaluationId} for job: ${jobTitle}`,
+    );
 
     try {
       // Update status to processing
@@ -106,9 +108,3 @@ export class EvaluationProcessor extends WorkerHost {
     }
   }
 }
-
-
-
-
-
-

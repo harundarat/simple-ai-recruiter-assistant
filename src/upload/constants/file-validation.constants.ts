@@ -42,5 +42,6 @@ export const FILE_VALIDATION_ERROR_MESSAGES = {
     `${fieldName} must have a valid PDF extension (.pdf)`,
   FILE_TOO_LARGE: (fieldName: string, maxSizeMB: number, fileSizeMB: string) =>
     `${fieldName} is too large. Maximum size is ${maxSizeMB}MB, got ${fileSizeMB}MB`,
-  ONLY_PDF_ALLOWED: 'Only PDF files are allowed. Please upload a valid PDF file.',
+  ONLY_PDF_ALLOWED:
+    'Only PDF files are allowed. Please upload a valid PDF file.',
 } as const;

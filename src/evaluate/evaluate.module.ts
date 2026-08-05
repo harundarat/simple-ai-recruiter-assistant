@@ -18,4 +18,4 @@ import { BullModule } from '@nestjs/bullmq';
   providers: [EvaluateService, EvaluationProcessor],
   exports: [EvaluateService],
 })
-export class EvaluateModule { }
+export class EvaluateModule {}

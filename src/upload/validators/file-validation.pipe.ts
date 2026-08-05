@@ -1,8 +1,4 @@
-import {
-  PipeTransform,
-  Injectable,
-  BadRequestException,
-} from '@nestjs/common';
+import { PipeTransform, Injectable, BadRequestException } from '@nestjs/common';
 import {
   FILE_VALIDATION_CONSTANTS,
   FILE_VALIDATION_ERROR_MESSAGES,
@@ -21,7 +17,8 @@ export class FileValidationPipe implements PipeTransform {
 
   constructor(options?: FileValidationOptions) {
     this.options = {
-      maxSize: options?.maxSize || FILE_VALIDATION_CONSTANTS.MAX_FILE_SIZE_BYTES,
+      maxSize:
+        options?.maxSize || FILE_VALIDATION_CONSTANTS.MAX_FILE_SIZE_BYTES,
       allowedMimeTypes:
         options?.allowedMimeTypes ||
         FILE_VALIDATION_CONSTANTS.ALLOWED_MIME_TYPES,
@@ -101,9 +98,7 @@ export class FilesValidationPipe implements PipeTransform {
 
     // Validate CV file presence
     if (!files.cv || files.cv.length === 0) {
-      throw new BadRequestException(
-        FILE_VALIDATION_ERROR_MESSAGES.CV_REQUIRED,
-      );
+      throw new BadRequestException(FILE_VALIDATION_ERROR_MESSAGES.CV_REQUIRED);
     }
 
     // Validate Project Report file presence

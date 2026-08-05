@@ -119,26 +119,31 @@ Stage 3: Final Synthesis
 ## Tech Stack
 
 ### Backend Framework
-- **NestJS** - Progressive Node.js framework with TypeScript
-- **TypeScript** - Type safety and better developer experience
+
+- **NestJS 11** - Progressive Node.js framework
+- **TypeScript 7** - Native compiler for fast type checking (TypeScript 6 API compatibility is retained for Jest/ESLint tooling)
 
 ### Database & Storage
+
 - **PostgreSQL** - Primary database for structured data
-- **Prisma ORM** - Type-safe database access and migrations
+- **Prisma ORM 7** - Type-safe database access using the PostgreSQL driver adapter
 - **AWS S3** - Object storage for CV and Project Report PDFs
 - **ChromaDB** - Vector database for semantic search (RAG)
 
 ### AI & LLM
+
 - **Google Gemini API** - Large language models
   - `gemini-2.5-flash-lite` - CV & Project evaluation (cost-efficient, multimodal)
   - `gemini-2.5-flash` - Final synthesis (better reasoning)
 - **Google Gemini Embeddings** - Text embeddings for vector search
 
 ### Job Queue & Processing
+
 - **BullMQ** - Robust job queue for async processing
 - **Redis** - In-memory data store for BullMQ
 
 ### File Upload
+
 - **Multer** - Multipart/form-data handling
 - **multer-s3** - Direct upload to AWS S3
 
@@ -202,13 +207,11 @@ simple-ai-recruiter-assistant/
 
 Before running this application, ensure you have:
 
-1. **Node.js** (v18 or higher)
-2. **pnpm** package manager
-3. **PostgreSQL** (v14 or higher)
-4. **Redis** (for BullMQ)
-5. **ChromaDB** (vector database)
-6. **AWS Account** with S3 bucket configured
-7. **Google Gemini API Key**
+1. **Node.js 24 or higher**
+2. **pnpm 11** package manager
+3. **Docker with Docker Compose** (for PostgreSQL, Redis, and ChromaDB)
+4. **AWS Account** with S3 bucket configured
+5. **Google Gemini API Key**
 
 ---
 
@@ -227,25 +230,13 @@ cd simple-ai-recruiter-assistant
 pnpm install
 ```
 
-### 3. Set up external services
+### 3. Start local services
 
-#### PostgreSQL
-```bash
-# Install PostgreSQL if not already installed
-# Create a database
-createdb ai_recruiter_db
-```
+The Compose stack starts PostgreSQL 18, Redis 8, and ChromaDB 1.5 with persistent named volumes and health checks where supported.
 
-#### Redis
 ```bash
-# Using Docker 
-docker run -d -p 6379:6379 redis:alpine
-```
-
-#### ChromaDB
-```bash
-# Using Docker 
-docker run -d -p 8000:8000 chromadb/chroma
+docker compose up -d
+docker compose ps
 ```
 
 ---
@@ -257,17 +248,17 @@ docker run -d -p 8000:8000 chromadb/chroma
 Create a `.env` file in the project root with the following variables:
 
 ```env
-# Database
-DATABASE_URL="postgresql://username:password@localhost:5432/ai_recruiter_db"
+# Database (matches docker-compose.yml defaults)
+DATABASE_URL="postgresql://evalu8:evalu8@localhost:5432/evalu8?schema=public"
 
 # Redis (for BullMQ)
 REDIS_HOST="localhost"
 REDIS_PORT="6379"
 
 # AWS S3
-AWS_REGION="ap-southeast-1"
-AWS_ACCESS_KEY_ID="your-aws-access-key"
-AWS_SECRET_ACCESS_KEY="your-aws-secret-key"
+S3_REGION="ap-southeast-1"
+S3_ACCESS_KEY_ID="your-aws-access-key"
+S3_SECRET_ACCESS_KEY="your-aws-secret-key"
 S3_BUCKET_NAME="your-bucket-name"
 
 # Google Gemini API
@@ -285,13 +276,13 @@ NODE_ENV="development"
 ### 2. Run database migrations
 
 ```bash
-pnpm prisma migrate deploy
+pnpm exec prisma migrate deploy
 ```
 
 ### 3. Generate Prisma client
 
 ```bash
-pnpm prisma generate
+pnpm run db:generate
 ```
 
 ---
@@ -327,6 +318,7 @@ Before running evaluations, you need to populate ChromaDB with ground truth docu
 Ensure you have a clean, well-structured PDF in the `seed/` directory. The default is `backend_case_study_clean.pdf`.
 
 **PDF Requirements:**
+
 - Clear section headings (Job Description, Case Study Brief, CV Rubric, Project Rubric)
 - 4-6 pages maximum
 - File size under 50KB recommended
@@ -348,10 +340,12 @@ pnpm run seed:pdf -- --file=frontend_case_study.pdf --role=frontend
 ```
 
 **CLI Arguments:**
+
 - `--file` or `-f`: PDF filename in the `seed/` directory (required)
 - `--role` or `-r`: Role for metadata (backend, frontend, fullstack, etc.) (required)
 
 **What this does:**
+
 - Reads the specified PDF using Gemini multimodal AI
 - Extracts 4 distinct sections:
   1. Job Description
@@ -372,6 +366,7 @@ pnpm ts-node seed/test-chromadb.ts
 This will query ChromaDB and display the ingested documents.
 
 **Expected output:**
+
 ```
 ✅ Successfully connected to collection: ground_truth
 ✅ Seeding complete! Collection 'ground_truth' now has 4 documents.
@@ -404,6 +399,7 @@ http://localhost:3000
 **Description:** Upload candidate CV and Project Report (both must be PDF files)
 
 **Request:**
+
 - Method: POST
 - Content-Type: multipart/form-data
 - Fields:
@@ -411,13 +407,15 @@ http://localhost:3000
   - `project_report` (file, required) - Candidate's project report in PDF format
 
 **Example (curl):**
+
 ```bash
 curl -X POST http://localhost:3000/upload \
   -F "cv=@/path/to/candidate_cv.pdf" \
   -F "project_report=@/path/to/project_report.pdf"
 ```
 
-**Response (200 OK):**
+**Response (201 Created):**
+
 ```json
 {
   "cv_id": 1,
@@ -427,16 +425,19 @@ curl -X POST http://localhost:3000/upload \
 ```
 
 **File Validation:**
+
 - Both files are required (CV and Project Report)
 - Only PDF files accepted (validated by MIME type and extension)
 - Maximum file size: 10MB per file
 - Dual-layer validation (Multer + validation pipes)
 
 **Error Responses:**
+
 - `400 Bad Request` - Missing files, invalid file format, or file too large
 - `500 Internal Server Error` - S3 upload failure or database error
 
 **Example Error Messages:**
+
 ```json
 // Missing file
 { "statusCode": 400, "message": "Project Report file is required (PDF format)" }
@@ -457,9 +458,11 @@ curl -X POST http://localhost:3000/upload \
 **Description:** Trigger asynchronous AI evaluation pipeline. Returns immediately with a job ID.
 
 **Request:**
+
 - Method: POST
 - Content-Type: application/json
 - Body:
+
 ```json
 {
   "job_title": "Backend Developer",
@@ -469,6 +472,7 @@ curl -X POST http://localhost:3000/upload \
 ```
 
 **Example (curl):**
+
 ```bash
 curl -X POST http://localhost:3000/evaluate \
   -H "Content-Type: application/json" \
@@ -479,16 +483,20 @@ curl -X POST http://localhost:3000/evaluate \
   }'
 ```
 
-**Response (200 OK):**
+**Response (201 Created):**
+
 ```json
 {
-  "id": 456
+  "id": 456,
+  "status": "queued"
 }
 ```
 
 **Error Responses:**
+
 - `400 Bad Request` - CV or Project Report not found with given IDs
-- `500 Internal Server Error` - Database error or queue failure
+- `503 Service Unavailable` - Evaluation could not be added to the queue
+- `500 Internal Server Error` - Database error
 
 **Note:** The evaluation process runs asynchronously. The response only contains the evaluation ID, not the results. Use the `/result/:id` endpoint to check status and retrieve results.
 
@@ -501,22 +509,27 @@ curl -X POST http://localhost:3000/evaluate \
 **Description:** Retrieve the status and result of an evaluation job
 
 **Request:**
+
 - Method: GET
 - URL Parameter: `id` (integer) - Evaluation ID from POST /evaluate
 
 **Example (curl):**
+
 ```bash
-curl http://localhost:3000/evaluate/result/456
+curl http://localhost:3000/result/456
 ```
 
 **Response - Queued/Processing:**
+
 ```json
 {
   "id": 456,
   "status": "queued"
 }
 ```
+
 or
+
 ```json
 {
   "id": 456,
@@ -525,6 +538,7 @@ or
 ```
 
 **Response - Completed (200 OK):**
+
 ```json
 {
   "id": 456,
@@ -540,6 +554,7 @@ or
 ```
 
 **Response - Failed:**
+
 ```json
 {
   "id": 456,
@@ -549,7 +564,8 @@ or
 ```
 
 **Error Responses:**
-- `400 Bad Request` - Evaluation not found with given ID
+
+- `404 Not Found` - Evaluation not found with given ID
 - `500 Internal Server Error` - Database error
 
 ---
@@ -574,7 +590,7 @@ EVAL_ID=$(echo $EVAL_RESPONSE | jq -r '.id')
 
 # 3. Poll for results (evaluation typically takes 30-90 seconds)
 while true; do
-  RESULT=$(curl http://localhost:3000/evaluate/result/$EVAL_ID)
+  RESULT=$(curl http://localhost:3000/result/$EVAL_ID)
   STATUS=$(echo $RESULT | jq -r '.status')
 
   if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ]; then
@@ -602,11 +618,13 @@ done
 5. Returns `cv_id` and `project_report_id` for later use
 
 **File validation rules:**
+
 - File type: PDF only (checked by MIME type `application/pdf` and extension `.pdf`)
 - File size: Maximum 10MB per file
 - Required files: Both CV and Project Report must be provided
 
 **Key implementation:**
+
 - Upload logic: `src/upload/upload.service.ts:8-34`
 - Validation: `src/upload/validators/file-validation.pipe.ts`
 
@@ -625,6 +643,7 @@ done
 The BullMQ worker (`evaluate.processor.ts`) executes these steps:
 
 #### Step 1: Data Retrieval
+
 ```typescript
 // Update status to 'processing'
 // Fetch CV and Project Report PDFs from S3
@@ -635,7 +654,12 @@ The BullMQ worker (`evaluate.processor.ts`) executes these steps:
 //   - Project Scoring Rubric
 ```
 
-#### Step 2: CV Evaluation (Gemini Flash Lite)
+#### Step 2: Parallel Document Evaluation (Gemini Flash Lite)
+
+The CV and project report calls are independent and run concurrently. Final synthesis starts only after both complete.
+
+##### CV Evaluation
+
 ```typescript
 Input:
   - CV PDF (as base64)
@@ -666,10 +690,10 @@ Output (JSON):
   }
 ```
 
-
 **Key implementation:** `src/evaluate/evaluate.service.ts:175-210`
 
-#### Step 3: Project Report Evaluation (Gemini Flash Lite)
+##### Project Report Evaluation
+
 ```typescript
 Input:
   - Project Report PDF (as base64)
@@ -705,7 +729,8 @@ Output (JSON):
 
 **Key implementation:** `src/evaluate/evaluate.service.ts:212-247`
 
-#### Step 4: Final Synthesis (Gemini Flash)
+#### Step 3: Final Synthesis (Gemini Flash)
+
 ```typescript
 Input:
   - CV Evaluation Results (all scores + reasoning)
@@ -722,9 +747,11 @@ Output (JSON):
     "overall_summary": "Strong candidate with good technical fit..."
   }
 ```
+
 **Key implementation:** `src/evaluate/evaluate.service.ts:249-298`
 
-#### Step 5: Result Storage
+#### Step 4: Result Storage
+
 ```typescript
 // Save all results to database:
 //   - cv_match_rate, cv_feedback
@@ -737,6 +764,7 @@ Output (JSON):
 ### 4. Error Handling & Retry Mechanism
 
 **LLM-level retries (automatic with exponential backoff):**
+
 ```typescript
 @Retry(PDF_RETRY_CONFIG) // 4 retries, 1s initial delay
 async callGeminiFlashLiteWithPDF() {
@@ -747,6 +775,7 @@ async callGeminiFlashLiteWithPDF() {
 ```
 
 **Processor-level error handling:**
+
 ```typescript
 try {
   // Execute evaluation pipeline (3 stages)
@@ -762,6 +791,7 @@ try {
 ```
 
 **Key implementation:**
+
 - Retry logic: `src/shared/retry.decorator.ts`, `src/shared/retry.utils.ts`
 - Processor error handling: `src/evaluate/evaluate.processor.ts:64-106`
 - LLM service: `src/shared/llm.service.ts:34-67, 81-92`
@@ -772,7 +802,8 @@ ChromaDB serves as the "ground truth" knowledge base:
 
 ```typescript
 // Example: Getting job description
-const jobDescription = await chromaService.getJobDescription("Backend Developer");
+const jobDescription =
+  await chromaService.getJobDescription('Backend Developer');
 
 // Under the hood:
 // 1. Embed the query using Google Gemini embeddings
@@ -782,6 +813,7 @@ const jobDescription = await chromaService.getJobDescription("Backend Developer"
 ```
 
 **Benefits:**
+
 - Semantic matching (not just keyword search)
 - Easy to add more job descriptions or roles
 - Decouples evaluation logic from reference data
@@ -798,16 +830,19 @@ const jobDescription = await chromaService.getJobDescription("Backend Developer"
 **Decision:** Use 3 LLM calls instead of potential 5+ calls
 
 **Stages:**
+
 1. CV Evaluation
 2. Project Report Evaluation
 3. Final Synthesis
 
 **Rejected alternatives:**
+
 - ❌ Separate calls for extration and scoring (too expensive, too slow)
 - ❌ Cross-validation step (adds complexity, limited value)
 - ❌ Single mega-prompt (poor separation of concerns, harder to debug)
 
 **Trade-offs:**
+
 - ✅ **Pro:** Cost-efficient (3 API calls vs 10+ calls)
 - ✅ **Pro:** Faster execution (30-60 seconds vs 2-3 minutes)
 - ✅ **Pro:** Easier to debug and maintain
@@ -823,11 +858,11 @@ const jobDescription = await chromaService.getJobDescription("Backend Developer"
 
 **Decision:** Use Gemini Flash Lite for analysis, Gemini Flash for synthesis
 
-| Task | Model | Reasoning |
-|------|-------|-----------|
-| CV Evaluation | Flash Lite | Good enough for structured scoring, multimodal PDF support, cost-effective |
-| Project Evaluation | Flash Lite | Same as CV, consistent approach |
-| Final Synthesis | Flash | Better reasoning, higher quality summaries |
+| Task               | Model      | Reasoning                                                                  |
+| ------------------ | ---------- | -------------------------------------------------------------------------- |
+| CV Evaluation      | Flash Lite | Good enough for structured scoring, multimodal PDF support, cost-effective |
+| Project Evaluation | Flash Lite | Same as CV, consistent approach                                            |
+| Final Synthesis    | Flash      | Better reasoning, higher quality summaries                                 |
 
 ---
 
@@ -836,6 +871,7 @@ const jobDescription = await chromaService.getJobDescription("Backend Developer"
 **Decision:** Use job queue instead of synchronous processing
 
 **Why:**
+
 - ✅ Evaluation takes 30-90 seconds (unacceptable for synchronous HTTP request)
 - ✅ Enables retry mechanisms for failed jobs
 - ✅ Provides monitoring and job history
@@ -843,10 +879,12 @@ const jobDescription = await chromaService.getJobDescription("Backend Developer"
 - ✅ Client gets immediate response (job ID)
 
 **Alternative considered:**
+
 - Synchronous processing with long timeout → Rejected: Poor UX, ties up server resources
 - Server-Sent Events (SSE) for real-time updates → Rejected: Added complexity, not required
 
 **Trade-off:**
+
 - ⚠️ **Con:** Requires Redis infrastructure
 - ⚠️ **Con:** Client must poll or use webhooks (added complexity)
 - ✅ **Pro:** Professional production-ready pattern
@@ -859,17 +897,20 @@ const jobDescription = await chromaService.getJobDescription("Backend Developer"
 **Decision:** Send PDF directly to Gemini multimodal API, no preprocessing
 
 **Why:**
+
 - ✅ Simpler code (no PDF parsing libraries needed)
 - ✅ Gemini understands document structure (headings, lists, tables)
 - ✅ Preserves visual formatting context
 - ✅ No loss of information from conversion
 
 **Alternatives considered:**
+
 - `pdf-parse` library → Rejected: Loses structure, struggles with complex layouts
 - OCR + text extraction → Rejected: Overkill for digital PDFs
 - Convert to Markdown → Rejected: Extra processing step, potential data loss
 
 **Trade-off:**
+
 - ⚠️ **Con:** Dependent on Gemini's PDF processing quality
 - ⚠️ **Con:** Larger request payload (base64 encoding)
 - ✅ **Pro:** Higher accuracy and context preservation
@@ -882,6 +923,7 @@ const jobDescription = await chromaService.getJobDescription("Backend Developer"
 **Decision:** Use vector database for ground truth documents
 
 **Why:**
+
 - ✅ Semantic search (matches "Backend Engineer" with "Backend Developer")
 - ✅ Scales to multiple roles/job descriptions easily
 - ✅ Metadata filtering (type, role, etc.)
@@ -889,11 +931,13 @@ const jobDescription = await chromaService.getJobDescription("Backend Developer"
 - ✅ Easy to update rubrics without code changes
 
 **Alternatives considered:**
+
 - Store rubrics in code constants → Rejected: Hard to maintain, no semantic search
 - Store in PostgreSQL → Rejected: No semantic matching capabilities
 - Read files directly → Rejected: No flexibility, hard-coded paths
 
 **Trade-off:**
+
 - ⚠️ **Con:** Requires ChromaDB infrastructure
 - ⚠️ **Con:** Ingestion step needed before first use
 - ✅ **Pro:** Professional RAG implementation
@@ -906,18 +950,20 @@ const jobDescription = await chromaService.getJobDescription("Backend Developer"
 
 **Decision:** Use different temperature settings for different tasks
 
-| Task | Temperature | Reasoning |
-|------|-------------|-----------|
-| Seeding (PDF extraction) | 0.1 | Need consistency, same PDF should extract identically |
-| CV Evaluation | 0.3 | Balanced: some creativity, mostly consistent scoring |
-| Project Evaluation | 0.3 | Same as CV for fairness |
-| Final Synthesis | 0.3 | Slightly creative summaries, but still grounded |
+| Task                     | Temperature | Reasoning                                             |
+| ------------------------ | ----------- | ----------------------------------------------------- |
+| Seeding (PDF extraction) | 0.1         | Need consistency, same PDF should extract identically |
+| CV Evaluation            | 0.3         | Balanced: some creativity, mostly consistent scoring  |
+| Project Evaluation       | 0.3         | Same as CV for fairness                               |
+| Final Synthesis          | 0.3         | Slightly creative summaries, but still grounded       |
 
 **Why not 0.0?**
+
 - Temperature 0.0 can sometimes produce repetitive or overly rigid outputs
 - 0.3 provides good balance of consistency and natural language quality
 
 **Why not higher (0.7+)?**
+
 - Evaluation scores should be consistent for same input
 - High randomness would make scoring unreliable
 
@@ -926,6 +972,7 @@ const jobDescription = await chromaService.getJobDescription("Backend Developer"
 ### 7. Error Handling & Retry Strategy
 
 **Current implementation:**
+
 - ✅ **File upload validation** (dual-layer: Multer + validation pipes)
 - ✅ **Automatic retry with exponential backoff** for LLM API calls
 - ✅ **Smart error classification** (retryable vs permanent errors)
@@ -936,6 +983,7 @@ const jobDescription = await chromaService.getJobDescription("Backend Developer"
 - ✅ Input validation for API requests
 
 **File validation includes:**
+
 - File type validation (PDF only, by MIME type and extension)
 - File size validation (max 10MB)
 - Required files check (both CV and Project Report)
@@ -945,25 +993,28 @@ const jobDescription = await chromaService.getJobDescription("Backend Developer"
 
 Implemented using decorator pattern (`@Retry`) with configurable retry policies:
 
-| LLM Operation | Model | Max Retries | Initial Delay | Backoff Multiplier |
-|---------------|-------|-------------|---------------|-------------------|
-| CV Evaluation | Flash Lite | 4 | 1000ms | 2x |
-| Project Evaluation | Flash Lite | 4 | 1000ms | 2x |
-| Final Synthesis | Flash | 3 | 500ms | 2x |
+| LLM Operation      | Model      | Max Retries | Initial Delay | Backoff Multiplier |
+| ------------------ | ---------- | ----------- | ------------- | ------------------ |
+| CV Evaluation      | Flash Lite | 4           | 1000ms        | 2x                 |
+| Project Evaluation | Flash Lite | 4           | 1000ms        | 2x                 |
+| Final Synthesis    | Flash      | 3           | 500ms         | 2x                 |
 
 **Retry-able errors (will retry):**
+
 - Network timeouts (ETIMEDOUT, EHOSTUNREACH)
 - Rate limiting (HTTP 429)
 - Service unavailable (HTTP 503, 504)
 - Connection errors (ECONNREFUSED, ECONNRESET)
 
 **Non-retryable errors (fail immediately):**
+
 - Authentication failures (HTTP 401, 403)
 - Bad requests (HTTP 400, 404)
 - Invalid API keys
 - Malformed requests
 
 **Example retry flow:**
+
 ```
 Attempt 1: Rate limit (429) → Wait 1s
 Attempt 2: Timeout → Wait 2s
@@ -973,6 +1024,7 @@ Attempt 3: Success! ✓
 **Implementation details:** `src/shared/retry.decorator.ts`, `src/shared/retry.utils.ts`, `src/shared/retry.config.ts`
 
 **Not implemented (future work):**
+
 - ❌ Partial result storage (if one stage succeeds but next fails)
 - ❌ Circuit breaker pattern
 
@@ -1015,6 +1067,7 @@ Attempt 3: Success! ✓
 **Decision:** Upload files directly to AWS S3
 
 **Why:**
+
 - ✅ Scalable storage (no local disk limits)
 - ✅ Files accessible from multiple workers
 - ✅ Built-in redundancy and durability
@@ -1022,10 +1075,12 @@ Attempt 3: Success! ✓
 - ✅ Standard production pattern
 
 **Alternative considered:**
+
 - Local filesystem → Rejected: Doesn't scale, lost on server restart
 - Database BLOB storage → Rejected: Poor performance for large files
 
 **Trade-off:**
+
 - ⚠️ **Con:** Requires AWS account and configuration
 - ⚠️ **Con:** Additional latency for file retrieval
 - ✅ **Pro:** Production-ready architecture
@@ -1037,14 +1092,23 @@ Attempt 3: Success! ✓
 
 ### Current Testing Status
 
-**Implemented:**
-- ✅ Manual end-to-end testing via API calls
-- ✅ ChromaDB ingestion verification script
+The automated suite currently contains **54 unit tests** and **6 HTTP integration tests**. Unit coverage is **82.6% lines** and **81.6% statements**, with an enforced 80% threshold. External services are mocked in automated tests so the suite is deterministic; the ingestion verification script remains available for a live ChromaDB check.
 
-**Not Implemented:**
-- ❌ Unit tests
-- ❌ Integration tests
-- ❌ E2E automated tests
+```bash
+# Unit tests
+pnpm test
+
+# HTTP integration tests (Nest router, pipes, and controllers)
+pnpm run test:e2e
+
+# Unit tests with enforced coverage threshold
+pnpm run test:cov
+
+# Static quality gates
+pnpm run lint
+pnpm run typecheck
+pnpm run build
+```
 
 ### Manual Testing Guide
 
@@ -1076,13 +1140,14 @@ Expected: Returns evaluation `id` with status `queued`
 
 ```bash
 # Check immediately (should be queued or processing)
-curl http://localhost:3000/evaluate/result/1
+curl http://localhost:3000/result/1
 
 # Wait 30-60 seconds, check again (should be completed)
-curl http://localhost:3000/evaluate/result/1
+curl http://localhost:3000/result/1
 ```
 
 Expected:
+
 - First call: `status: "queued"` or `"processing"`
 - Second call: `status: "completed"` with full results
 
@@ -1126,40 +1191,20 @@ curl -X POST http://localhost:3000/evaluate \
 
 Expected: 400 Bad Request with error message
 
-### Future Testing Plan
+### Live Integration Checks
 
-**Unit Tests (Recommended):**
-```typescript
-// Example: src/evaluate/evaluate.service.spec.ts
-describe('EvaluateService', () => {
-  it('should calculate cv_match_rate correctly', () => {
-    // Test weighted average calculation
-  });
-
-  it('should handle missing documents gracefully', () => {
-    // Test error handling
-  });
-});
-```
-
-**Integration Tests:**
-- Test full evaluation pipeline with mock LLM responses
-- Test ChromaDB retrieval with seeded test data
-- Test S3 upload/download operations
-
-**E2E Tests:**
-- Upload → Evaluate → Retrieve full flow
-- Test async processing with job queue
+Use `pnpm ts-node seed/test-chromadb.ts` after seeding to verify a running ChromaDB instance. A full external-service E2E flow (real S3, Redis worker, Gemini, and PostgreSQL) remains intentionally separate from the deterministic automated suite.
 
 ---
 
 ## Future Improvements
 
 ### Priority 1: Production Readiness
+
 1. **Automated Tests**
-   - Unit tests for services (target: 80% coverage)
-   - Integration tests for API endpoints
-   - E2E tests for critical user flows
+   - ✅ Unit tests for services (80% coverage threshold)
+   - ✅ Integration tests for API endpoints
+   - [ ] E2E tests for critical user flows with live external services
 
 2. **Advanced Error Handling**
    - ✅ ~~Exponential backoff for LLM API retries~~ **(IMPLEMENTED)**
@@ -1174,10 +1219,11 @@ describe('EvaluateService', () => {
    - Health check endpoints
 
 ### Priority 2: Feature Enhancements
+
 4. **API Improvements**
    - Swagger/OpenAPI documentation
    - API versioning
-   - Request validation (class-validator)
+   - ✅ Request validation (class-validator)
    - Rate limiting (per user/IP)
 
 5. **Authentication & Authorization**
@@ -1190,13 +1236,14 @@ describe('EvaluateService', () => {
    - Event-driven notifications
 
 ### Priority 3: Scalability & Performance
+
 7. **Caching Layer**
    - Cache vector DB queries (Redis)
    - Cache frequent job descriptions
    - Response caching for identical CVs
 
 8. **Performance Optimizations**
-   - Parallel LLM calls where possible
+   - ✅ Parallel LLM calls where possible
    - Connection pooling for database
    - S3 request optimization
 
@@ -1206,6 +1253,7 @@ describe('EvaluateService', () => {
    - Distributed job queue
 
 ### Priority 4: User Experience
+
 10. **Dashboard UI**
     - Web interface for evaluation management
     - Real-time status updates (WebSockets)
@@ -1220,9 +1268,10 @@ describe('EvaluateService', () => {
     - Weekly summary reports
 
 ### Priority 5: DevOps
+
 13. **Containerization**
-    - Docker Compose for local development
-    - Kubernetes manifests for production
+    - ✅ Docker Compose for local development
+    - [ ] Kubernetes manifests for production
 
 14. **CI/CD Pipeline**
     - Automated testing on PR

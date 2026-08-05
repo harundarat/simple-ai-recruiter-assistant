@@ -21,6 +21,26 @@ describe('validateEnvironment', () => {
         CHROMA_PORT: 8000,
         CHROMA_COLLECTION_NAME: 'ground_truth',
         S3_FORCE_PATH_STYLE: false,
+        CIRCUIT_BREAKER_ENABLED: true,
+        CIRCUIT_BREAKER_FAILURE_THRESHOLD: 3,
+        CIRCUIT_BREAKER_RESET_TIMEOUT_MS: 30_000,
+      }),
+    );
+  });
+
+  it('parses circuit breaker settings', () => {
+    expect(
+      validateEnvironment({
+        ...validEnvironment,
+        CIRCUIT_BREAKER_ENABLED: 'false',
+        CIRCUIT_BREAKER_FAILURE_THRESHOLD: '5',
+        CIRCUIT_BREAKER_RESET_TIMEOUT_MS: '45000',
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        CIRCUIT_BREAKER_ENABLED: false,
+        CIRCUIT_BREAKER_FAILURE_THRESHOLD: 5,
+        CIRCUIT_BREAKER_RESET_TIMEOUT_MS: 45_000,
       }),
     );
   });
@@ -73,6 +93,42 @@ describe('validateEnvironment', () => {
       expect(() =>
         validateEnvironment({ ...validEnvironment, REDIS_PORT: port }),
       ).toThrow('REDIS_PORT must be an integer between 1 and 65535');
+    },
+  );
+
+  it.each(['0', '-1', '1.5', 'not-a-number'])(
+    'rejects invalid circuit breaker threshold %s',
+    (threshold) => {
+      expect(() =>
+        validateEnvironment({
+          ...validEnvironment,
+          CIRCUIT_BREAKER_FAILURE_THRESHOLD: threshold,
+        }),
+      ).toThrow('CIRCUIT_BREAKER_FAILURE_THRESHOLD must be a positive integer');
+    },
+  );
+
+  it.each(['0', '-1', '1.5', 'not-a-number'])(
+    'rejects invalid circuit breaker reset timeout %s',
+    (timeout) => {
+      expect(() =>
+        validateEnvironment({
+          ...validEnvironment,
+          CIRCUIT_BREAKER_RESET_TIMEOUT_MS: timeout,
+        }),
+      ).toThrow('CIRCUIT_BREAKER_RESET_TIMEOUT_MS must be a positive integer');
+    },
+  );
+
+  it.each(['yes', '1', 1])(
+    'rejects invalid circuit breaker enabled value %s',
+    (enabled) => {
+      expect(() =>
+        validateEnvironment({
+          ...validEnvironment,
+          CIRCUIT_BREAKER_ENABLED: enabled,
+        }),
+      ).toThrow('CIRCUIT_BREAKER_ENABLED must be true or false');
     },
   );
 });

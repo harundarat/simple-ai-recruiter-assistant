@@ -31,6 +31,19 @@ function parseNonNegativeNumber(
   return parsed;
 }
 
+function parsePositiveInteger(
+  value: unknown,
+  name: string,
+  defaultValue: number,
+): number {
+  const parsed =
+    value === undefined || value === '' ? defaultValue : Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return parsed;
+}
+
 function parseBoolean(value: unknown, name: string, defaultValue: boolean) {
   if (value === undefined || value === '') {
     return defaultValue;
@@ -71,6 +84,21 @@ export function validateEnvironment(
       environment.S3_FORCE_PATH_STYLE,
       'S3_FORCE_PATH_STYLE',
       false,
+    ),
+    CIRCUIT_BREAKER_ENABLED: parseBoolean(
+      environment.CIRCUIT_BREAKER_ENABLED,
+      'CIRCUIT_BREAKER_ENABLED',
+      true,
+    ),
+    CIRCUIT_BREAKER_FAILURE_THRESHOLD: parsePositiveInteger(
+      environment.CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+      'CIRCUIT_BREAKER_FAILURE_THRESHOLD',
+      3,
+    ),
+    CIRCUIT_BREAKER_RESET_TIMEOUT_MS: parsePositiveInteger(
+      environment.CIRCUIT_BREAKER_RESET_TIMEOUT_MS,
+      'CIRCUIT_BREAKER_RESET_TIMEOUT_MS',
+      30_000,
     ),
     GEMINI_RETRY_DELAY_MS: parseNonNegativeNumber(
       environment.GEMINI_RETRY_DELAY_MS,

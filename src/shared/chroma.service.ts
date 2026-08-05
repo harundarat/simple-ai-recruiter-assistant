@@ -47,6 +47,7 @@ export class GeminiEmbeddingFunction implements EmbeddingFunction {
 export class ChromaService implements KnowledgeBase {
   private readonly client: ChromaClient;
   private readonly collectionName: string;
+  private readonly embeddingFunction: GeminiEmbeddingFunction;
   private collectionPromise?: Promise<Collection>;
 
   constructor(
@@ -63,20 +64,26 @@ export class ChromaService implements KnowledgeBase {
     });
     this.collectionName =
       configService.get<string>('CHROMA_COLLECTION_NAME') ?? 'ground_truth';
+    this.embeddingFunction = new GeminiEmbeddingFunction(
+      this.geminiClient,
+      this.retryExecutor,
+      this.geminiRetryOptions,
+      this.circuitBreakerExecutor,
+    );
   }
 
   async getCollection(
     collectionName = this.collectionName,
   ): Promise<Collection> {
-    this.collectionPromise ??= this.client.getOrCreateCollection({
-      name: collectionName,
-      embeddingFunction: new GeminiEmbeddingFunction(
-        this.geminiClient,
-        this.retryExecutor,
-        this.geminiRetryOptions,
-        this.circuitBreakerExecutor,
-      ),
-    });
+    this.collectionPromise ??= this.circuitBreakerExecutor.execute(
+      'chroma',
+      'getOrCreateCollection',
+      () =>
+        this.client.getOrCreateCollection({
+          name: collectionName,
+          embeddingFunction: this.embeddingFunction,
+        }),
+    );
 
     try {
       return await this.collectionPromise;
@@ -89,9 +96,7 @@ export class ChromaService implements KnowledgeBase {
   async getJobDescription(
     jobTitle: string,
   ): Promise<{ document: string; role: string }> {
-    const collection = await this.getCollection();
-    const results = await collection.query({
-      queryTexts: [jobTitle],
+    const results = await this.queryCollection('getJobDescription', jobTitle, {
       nResults: 1,
       include: ['documents', 'metadatas'],
       where: { type: 'job_description' },
@@ -113,12 +118,14 @@ export class ChromaService implements KnowledgeBase {
   }
 
   async getCaseStudyBrief(role: string): Promise<string> {
-    const collection = await this.getCollection();
-    const results = await collection.query({
-      queryTexts: ['case study brief project requirements'],
-      nResults: 1,
-      where: { $and: [{ type: 'case_study_brief' }, { role }] },
-    });
+    const results = await this.queryCollection(
+      'getCaseStudyBrief',
+      'case study brief project requirements',
+      {
+        nResults: 1,
+        where: { $and: [{ type: 'case_study_brief' }, { role }] },
+      },
+    );
 
     const document = results.documents[0]?.[0];
     if (!document) {
@@ -131,16 +138,16 @@ export class ChromaService implements KnowledgeBase {
     rubricType: 'cv' | 'project',
     role: string,
   ): Promise<string> {
-    const collection = await this.getCollection();
-    const results = await collection.query({
-      queryTexts: [
-        rubricType === 'cv'
-          ? 'cv evaluation scoring rubric parameters'
-          : 'project evaluation scoring rubric parameters',
-      ],
-      nResults: 1,
-      where: { $and: [{ type: 'rubric' }, { for: rubricType }, { role }] },
-    });
+    const results = await this.queryCollection(
+      'getScoringRubric',
+      rubricType === 'cv'
+        ? 'cv evaluation scoring rubric parameters'
+        : 'project evaluation scoring rubric parameters',
+      {
+        nResults: 1,
+        where: { $and: [{ type: 'rubric' }, { for: rubricType }, { role }] },
+      },
+    );
 
     const document = results.documents[0]?.[0];
     if (!document) {
@@ -149,5 +156,27 @@ export class ChromaService implements KnowledgeBase {
       );
     }
     return document;
+  }
+
+  private async queryCollection(
+    operationName: string,
+    queryText: string,
+    options: Omit<
+      Parameters<Collection['query']>[0],
+      'queryEmbeddings' | 'queryTexts'
+    >,
+  ) {
+    const queryEmbeddings = await this.embeddingFunction.generate([queryText]);
+    const queryEmbedding = queryEmbeddings[0];
+    if (!queryEmbedding) {
+      throw new Error('Gemini returned no embedding for the Chroma query');
+    }
+    const collection = await this.getCollection();
+    return this.circuitBreakerExecutor.execute('chroma', operationName, () =>
+      collection.query({
+        ...options,
+        queryEmbeddings: [queryEmbedding],
+      }),
+    );
   }
 }

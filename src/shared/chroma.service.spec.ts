@@ -1,10 +1,20 @@
-import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from '@jest/globals';
 import { ConfigService } from '@nestjs/config';
 import { ChromaClient, Collection } from 'chromadb';
 import { ChromaService, GeminiEmbeddingFunction } from './chroma.service';
 import type { GeminiClient } from './gemini-client';
 import { RetryExecutor } from './retry.executor';
-import { CircuitBreakerExecutor } from './circuit-breaker.executor';
+import {
+  CircuitBreakerExecutor,
+  CircuitOpenError,
+} from './circuit-breaker.executor';
 
 jest.mock('chromadb');
 
@@ -28,14 +38,21 @@ describe('ChromaService', () => {
   const getOrCreateCollection = jest.fn(() => Promise.resolve(collection));
   let service: ChromaService;
 
-  beforeEach(() => {
-    jest.clearAllMocks();
-    embed.mockResolvedValue([[0.1, 0.2]]);
-    jest
-      .mocked(ChromaClient)
-      .mockImplementation(
-        () => ({ getOrCreateCollection }) as unknown as ChromaClient,
-      );
+  function createCircuitBreaker(failureThreshold = 3) {
+    const values: Record<string, unknown> = {
+      CIRCUIT_BREAKER_ENABLED: true,
+      CIRCUIT_BREAKER_FAILURE_THRESHOLD: failureThreshold,
+      CIRCUIT_BREAKER_RESET_TIMEOUT_MS: 30_000,
+    };
+    return new CircuitBreakerExecutor({
+      get: jest.fn((name: string) => values[name]),
+    } as unknown as ConfigService);
+  }
+
+  function createService(
+    circuitBreaker = createCircuitBreaker(),
+    options = retryOptions,
+  ) {
     const values: Record<string, string | number> = {
       CHROMA_HOST: 'chroma.local',
       CHROMA_PORT: 8100,
@@ -45,29 +62,34 @@ describe('ChromaService', () => {
       getOrThrow: jest.fn((name: string) => values[name]),
       get: jest.fn((name: string) => values[name]),
     } as unknown as ConfigService;
-    service = new ChromaService(
+    return new ChromaService(
       config,
       geminiClient,
       new RetryExecutor(),
-      retryOptions,
-      new CircuitBreakerExecutor({
-        get: jest.fn((name: string) =>
-          name === 'CIRCUIT_BREAKER_ENABLED' ? true : undefined,
-        ),
-      } as unknown as ConfigService),
+      options,
+      circuitBreaker,
     );
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    embed.mockResolvedValue([[0.1, 0.2]]);
+    jest
+      .mocked(ChromaClient)
+      .mockImplementation(
+        () => ({ getOrCreateCollection }) as unknown as ChromaClient,
+      );
+    service = createService();
   });
+
+  afterEach(() => jest.useRealTimers());
 
   it('generates embeddings through the shared Gemini client', async () => {
     const embeddingFunction = new GeminiEmbeddingFunction(
       geminiClient,
       new RetryExecutor(),
       retryOptions,
-      new CircuitBreakerExecutor({
-        get: jest.fn((name: string) =>
-          name === 'CIRCUIT_BREAKER_ENABLED' ? true : undefined,
-        ),
-      } as unknown as ConfigService),
+      createCircuitBreaker(),
     );
 
     await expect(embeddingFunction.generate(['Backend role'])).resolves.toEqual(
@@ -112,7 +134,7 @@ describe('ChromaService', () => {
       'CV rubric',
     );
     expect(query).toHaveBeenCalledWith({
-      queryTexts: ['cv evaluation scoring rubric parameters'],
+      queryEmbeddings: [[0.1, 0.2]],
       nResults: 1,
       where: { $and: [{ type: 'rubric' }, { for: 'cv' }, { role: 'backend' }] },
     });
@@ -146,5 +168,65 @@ describe('ChromaService', () => {
       role: 'backend',
     });
     expect(getOrCreateCollection).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not count a Gemini embedding outage against Chroma', async () => {
+    jest.useFakeTimers();
+    service = createService(createCircuitBreaker(1), {
+      ...retryOptions,
+      maxAttempts: 1,
+    });
+    embed.mockRejectedValueOnce(
+      Object.assign(new Error('Gemini unavailable'), { status: 503 }),
+    );
+
+    await expect(service.getJobDescription('Backend')).rejects.toThrow(
+      'Gemini unavailable',
+    );
+    expect(getOrCreateCollection).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
+
+    jest.advanceTimersByTime(30_000);
+    embed.mockResolvedValue([[0.1, 0.2]]);
+    query.mockResolvedValue({
+      documents: [['Job description']],
+      metadatas: [[{ role: 'backend' }]],
+    });
+    await expect(service.getJobDescription('Backend')).resolves.toEqual({
+      document: 'Job description',
+      role: 'backend',
+    });
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the Chroma circuit after transient query failures', async () => {
+    query.mockRejectedValue(
+      Object.assign(new Error('Chroma unavailable'), { status: 503 }),
+    );
+
+    for (let call = 0; call < 3; call += 1) {
+      await expect(service.getCaseStudyBrief('backend')).rejects.toThrow(
+        'Chroma unavailable',
+      );
+    }
+    await expect(service.getCaseStudyBrief('backend')).rejects.toBeInstanceOf(
+      CircuitOpenError,
+    );
+    expect(query).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps missing ground truth validation outside the Chroma circuit', async () => {
+    service = createService(createCircuitBreaker(1));
+    query
+      .mockResolvedValueOnce({ documents: [[]] })
+      .mockResolvedValueOnce({ documents: [['Case study']] });
+
+    await expect(service.getCaseStudyBrief('backend')).rejects.toThrow(
+      'Case study brief not found',
+    );
+    await expect(service.getCaseStudyBrief('backend')).resolves.toBe(
+      'Case study',
+    );
+    expect(query).toHaveBeenCalledTimes(2);
   });
 });

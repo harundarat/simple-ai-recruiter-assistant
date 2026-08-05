@@ -6,11 +6,15 @@ import {
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { FileStore, StoredFileReference } from './infrastructure.tokens';
+import { CircuitBreakerExecutor } from './circuit-breaker.executor';
 
 @Injectable()
 export class S3Service implements FileStore {
   private readonly s3Client: S3Client;
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly circuitBreakerExecutor: CircuitBreakerExecutor,
+  ) {
     const endpoint = configService.get<string>('S3_ENDPOINT');
     this.s3Client = new S3Client({
       region: configService.getOrThrow<string>('S3_REGION'),
@@ -28,6 +32,15 @@ export class S3Service implements FileStore {
           }
         : {}),
     });
+    this.s3Client.middlewareStack.add(
+      (next, context) => (args) =>
+        this.circuitBreakerExecutor.execute(
+          's3',
+          context.commandName ?? 'UnknownS3Command',
+          () => next(args),
+        ),
+      { step: 'initialize', name: 's3CircuitBreaker' },
+    );
   }
 
   getS3Client(): S3Client {

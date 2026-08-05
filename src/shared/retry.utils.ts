@@ -101,6 +101,30 @@ export function calculateBackoffDelay(
   return cappedDelay;
 }
 
+export function calculateRetryDelay(
+  attemptNumber: number,
+  config: {
+    initialDelayMs: number;
+    maxDelayMs: number;
+    backoffMultiplier: number;
+    jitterRatio: number;
+  },
+): number {
+  const exponentialDelay = Math.min(
+    config.initialDelayMs * config.backoffMultiplier ** attemptNumber,
+    config.maxDelayMs,
+  );
+  if (config.jitterRatio === 0) {
+    return exponentialDelay;
+  }
+
+  const variation = exponentialDelay * config.jitterRatio;
+  return Math.max(
+    0,
+    Math.floor(exponentialDelay - variation + Math.random() * variation * 2),
+  );
+}
+
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

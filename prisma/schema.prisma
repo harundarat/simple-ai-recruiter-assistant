@@ -40,6 +40,26 @@ enum EvaluationStatus {
   failed
 }
 
+enum EvaluationErrorCode {
+  QUEUE_UNAVAILABLE
+  STORAGE_UNAVAILABLE
+  STORAGE_OBJECT_NOT_FOUND
+  KNOWLEDGE_BASE_UNAVAILABLE
+  GROUND_TRUTH_NOT_FOUND
+  LLM_UNAVAILABLE
+  LLM_INVALID_RESPONSE
+  INTERNAL_ERROR
+}
+
+enum EvaluationFailedStage {
+  ENQUEUE
+  LOAD_FILES
+  LOAD_GROUND_TRUTH
+  CV_EVALUATION
+  PROJECT_EVALUATION
+  FINAL_SYNTHESIS
+}
+
 model Evaluation {
   id                Int              @id @default(autoincrement())
   cv                CV               @relation(fields: [cv_id], references: [id])
@@ -57,8 +77,10 @@ model Evaluation {
   overall_summary  String? @db.Text
 
   // Error tracking (for failed jobs)
-  error_message String? @db.Text
-  retry_count   Int     @default(0)
+  error_code    EvaluationErrorCode?
+  failed_stage  EvaluationFailedStage?
+  error_message String?                @db.Text
+  retry_count   Int                    @default(0)
 
   // Timing tracking (for monitoring)
   started_at   DateTime?

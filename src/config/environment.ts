@@ -18,6 +18,32 @@ function parsePort(value: unknown, name: string, defaultValue: number): number {
   return port;
 }
 
+function parseNonNegativeNumber(
+  value: unknown,
+  name: string,
+  defaultValue: number,
+): number {
+  const parsed =
+    value === undefined || value === '' ? defaultValue : Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`${name} must be a non-negative number`);
+  }
+  return parsed;
+}
+
+function parseBoolean(value: unknown, name: string, defaultValue: boolean) {
+  if (value === undefined || value === '') {
+    return defaultValue;
+  }
+  if (value === true || value === 'true') {
+    return true;
+  }
+  if (value === false || value === 'false') {
+    return false;
+  }
+  throw new Error(`${name} must be true or false`);
+}
+
 export function validateEnvironment(
   environment: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -39,5 +65,42 @@ export function validateEnvironment(
     REDIS_PORT: parsePort(environment.REDIS_PORT, 'REDIS_PORT', 6379),
     CHROMA_HOST: environment.CHROMA_HOST || 'localhost',
     CHROMA_PORT: parsePort(environment.CHROMA_PORT, 'CHROMA_PORT', 8000),
+    CHROMA_COLLECTION_NAME:
+      environment.CHROMA_COLLECTION_NAME || 'ground_truth',
+    S3_FORCE_PATH_STYLE: parseBoolean(
+      environment.S3_FORCE_PATH_STYLE,
+      'S3_FORCE_PATH_STYLE',
+      false,
+    ),
+    GEMINI_RETRY_DELAY_MS: parseNonNegativeNumber(
+      environment.GEMINI_RETRY_DELAY_MS,
+      'GEMINI_RETRY_DELAY_MS',
+      500,
+    ),
+    GEMINI_TIMEOUT_MS: parseNonNegativeNumber(
+      environment.GEMINI_TIMEOUT_MS,
+      'GEMINI_TIMEOUT_MS',
+      90_000,
+    ),
+    ENQUEUE_RETRY_DELAY_MS: parseNonNegativeNumber(
+      environment.ENQUEUE_RETRY_DELAY_MS,
+      'ENQUEUE_RETRY_DELAY_MS',
+      250,
+    ),
+    ENQUEUE_TIMEOUT_MS: parseNonNegativeNumber(
+      environment.ENQUEUE_TIMEOUT_MS,
+      'ENQUEUE_TIMEOUT_MS',
+      5_000,
+    ),
+    BULL_RETRY_DELAY_MS: parseNonNegativeNumber(
+      environment.BULL_RETRY_DELAY_MS,
+      'BULL_RETRY_DELAY_MS',
+      1_000,
+    ),
+    RETRY_JITTER_RATIO: parseNonNegativeNumber(
+      environment.RETRY_JITTER_RATIO,
+      'RETRY_JITTER_RATIO',
+      0.2,
+    ),
   };
 }

@@ -5,6 +5,8 @@ import { EvaluationProcessor } from './evaluate.processor';
 import { SharedModule } from '../shared/shared.module';
 import { ConfigModule } from '@nestjs/config';
 import { BullModule } from '@nestjs/bullmq';
+import { BullEvaluationQueueGateway } from './evaluation-queue.gateway';
+import { EVALUATION_QUEUE } from '../shared/infrastructure.tokens';
 
 @Module({
   imports: [
@@ -15,7 +17,15 @@ import { BullModule } from '@nestjs/bullmq';
     }),
   ],
   controllers: [EvaluateController],
-  providers: [EvaluateService, EvaluationProcessor],
+  providers: [
+    EvaluateService,
+    EvaluationProcessor,
+    BullEvaluationQueueGateway,
+    {
+      provide: EVALUATION_QUEUE,
+      useExisting: BullEvaluationQueueGateway,
+    },
+  ],
   exports: [EvaluateService],
 })
 export class EvaluateModule {}

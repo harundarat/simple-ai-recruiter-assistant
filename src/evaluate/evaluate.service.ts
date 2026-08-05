@@ -1,16 +1,14 @@
 import {
   BadRequestException,
+  Inject,
   Injectable,
   Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { InjectQueue } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
+import { ZodType } from 'zod';
 import { PrismaService } from '../shared/prisma.service';
-import { S3Service } from '../shared/s3.service';
 import { LLMService } from '../shared/llm.service';
-import { ChromaService } from '../shared/chroma.service';
 import { CV_EVALUATION_SYSTEM_PROMPT } from './prompt/cv-evaluation.prompt';
 import { PROJECT_EVALUATION_SYSTEM_PROMPT } from './prompt/project-report-evaluation.prompt';
 import { FINAL_SYNTHESIS_SYSTEM_PROMPT } from './prompt/final-synthesis.prompt';
@@ -28,6 +26,23 @@ import {
 } from './dto/final-synthesis-result.dto';
 import { EvaluationStatus } from '../generated/prisma/enums';
 import { getErrorMessage } from '../shared/retry.utils';
+import {
+  EVALUATION_QUEUE,
+  FILE_STORE,
+  KNOWLEDGE_BASE,
+} from '../shared/infrastructure.tokens';
+import type {
+  EvaluationQueue,
+  FileStore,
+  KnowledgeBase,
+} from '../shared/infrastructure.tokens';
+import { RetryExecutor } from '../shared/retry.executor';
+import {
+  invalidLlmResponse,
+  PipelineError,
+  PipelineStage,
+  toPipelineError,
+} from '../shared/pipeline-error';
 
 @Injectable()
 export class EvaluateService {
@@ -35,11 +50,13 @@ export class EvaluateService {
 
   constructor(
     private readonly prismaService: PrismaService,
-    private readonly s3Service: S3Service,
+    @Inject(FILE_STORE) private readonly fileStore: FileStore,
     private readonly llmService: LLMService,
-    private readonly chromaService: ChromaService,
+    @Inject(KNOWLEDGE_BASE) private readonly knowledgeBase: KnowledgeBase,
     private readonly configService: ConfigService,
-    @InjectQueue('evaluation') private readonly evaluationQueue: Queue,
+    @Inject(EVALUATION_QUEUE)
+    private readonly evaluationQueue: EvaluationQueue,
+    private readonly retryExecutor: RetryExecutor,
   ) {}
 
   async startEvaluation(
@@ -47,11 +64,8 @@ export class EvaluateService {
     cvId: number,
     projectReportId: number,
   ): Promise<{ id: number; status: EvaluationStatus }> {
-    // Validate CV and Project Report exist
     const [cv, projectReport] = await Promise.all([
-      this.prismaService.cV.findUnique({
-        where: { id: cvId },
-      }),
+      this.prismaService.cV.findUnique({ where: { id: cvId } }),
       this.prismaService.projectReport.findUnique({
         where: { id: projectReportId },
       }),
@@ -60,18 +74,15 @@ export class EvaluateService {
     if (!cv) {
       throw new BadRequestException('CV not found');
     }
-
     if (!projectReport) {
       throw new BadRequestException('Project Report not found');
     }
-
     if (projectReport.cv_id !== cvId) {
       throw new BadRequestException(
         'Project Report does not belong to the specified CV',
       );
     }
 
-    // Create evaluation record with status 'queued'
     const evaluation = await this.prismaService.evaluation.create({
       data: {
         cv_id: cvId,
@@ -80,35 +91,53 @@ export class EvaluateService {
         status: 'queued',
       },
     });
+    const jobId = `evaluation-${evaluation.id}`;
 
     try {
-      await this.evaluationQueue.add(
-        'process-evaluation',
+      await this.retryExecutor.execute(
+        'ENQUEUE',
+        () =>
+          this.evaluationQueue.enqueue(
+            { evaluationId: evaluation.id, jobTitle, cvId, projectReportId },
+            jobId,
+          ),
         {
-          evaluationId: evaluation.id,
-          jobTitle,
-          cvId,
-          projectReportId,
-        },
-        {
-          jobId: `evaluation-${evaluation.id}`,
-          removeOnComplete: 1_000,
-          removeOnFail: 5_000,
+          maxAttempts: 2,
+          initialDelayMs:
+            this.configService.get<number>('ENQUEUE_RETRY_DELAY_MS') ?? 250,
+          maxDelayMs: 1_000,
+          backoffMultiplier: 2,
+          timeoutMs:
+            this.configService.get<number>('ENQUEUE_TIMEOUT_MS') ?? 5_000,
+          jitterRatio:
+            this.configService.get<number>('RETRY_JITTER_RATIO') ?? 0.2,
+          shouldRetry: () => true,
         },
       );
-    } catch (error: unknown) {
+    } catch (cause: unknown) {
+      const error = toPipelineError(cause, 'ENQUEUE');
+      this.logger.error('Failed to enqueue evaluation', {
+        evaluationId: evaluation.id,
+        cause: getErrorMessage(cause),
+      });
       await this.prismaService.evaluation.update({
         where: { id: evaluation.id },
         data: {
           status: 'failed',
-          error_message: `Failed to enqueue evaluation: ${getErrorMessage(error)}`,
+          error_code: error.errorCode,
+          failed_stage: error.failedStage,
+          error_message: error.publicMessage,
           completed_at: new Date(),
         },
       });
 
       throw new ServiceUnavailableException(
-        'Evaluation service is temporarily unavailable',
-        { cause: error },
+        {
+          error_code: error.errorCode,
+          failed_stage: error.failedStage,
+          message: error.publicMessage,
+        },
+        { cause },
       );
     }
 
@@ -120,38 +149,48 @@ export class EvaluateService {
     cvId: number,
     projectReportId: number,
   ) {
-    // get cv and project report
     const [cv, projectReport] = await Promise.all([
-      this.prismaService.cV.findUnique({
-        where: { id: cvId },
-      }),
+      this.prismaService.cV.findUnique({ where: { id: cvId } }),
       this.prismaService.projectReport.findUnique({
         where: { id: projectReportId },
       }),
     ]);
 
     if (!cv?.hosted_name || !projectReport?.hosted_name) {
-      throw new BadRequestException('CV or Project Report not found');
+      throw new PipelineError({
+        errorCode: 'STORAGE_OBJECT_NOT_FOUND',
+        failedStage: 'LOAD_FILES',
+        retryable: false,
+      });
     }
 
-    // get cv and project report buffers
     const bucketName = this.configService.getOrThrow<string>('S3_BUCKET_NAME');
-    const [cvBuffer, projectReportBuffer] = await Promise.all([
-      this.s3Service.getFile(bucketName, cv.hosted_name),
-      this.s3Service.getFile(bucketName, projectReport.hosted_name),
-    ]);
+    let cvBuffer: Buffer;
+    let projectReportBuffer: Buffer;
+    try {
+      [cvBuffer, projectReportBuffer] = await Promise.all([
+        this.fileStore.getFile(bucketName, cv.hosted_name),
+        this.fileStore.getFile(bucketName, projectReport.hosted_name),
+      ]);
+    } catch (error: unknown) {
+      throw toPipelineError(error, 'LOAD_FILES');
+    }
 
-    // Resolve the role from the matched job description, then keep every
-    // supporting document scoped to that same role.
-    const jobDescription = await this.chromaService.getJobDescription(jobTitle);
-    const [caseStudyBrief, cvRubric, projectRubric] = await Promise.all([
-      this.chromaService.getCaseStudyBrief(jobDescription.role),
-      this.chromaService.getScoringRubric('cv', jobDescription.role),
-      this.chromaService.getScoringRubric('project', jobDescription.role),
-    ]);
+    let jobDescription: { document: string; role: string };
+    let caseStudyBrief: string;
+    let cvRubric: string;
+    let projectRubric: string;
+    try {
+      jobDescription = await this.knowledgeBase.getJobDescription(jobTitle);
+      [caseStudyBrief, cvRubric, projectRubric] = await Promise.all([
+        this.knowledgeBase.getCaseStudyBrief(jobDescription.role),
+        this.knowledgeBase.getScoringRubric('cv', jobDescription.role),
+        this.knowledgeBase.getScoringRubric('project', jobDescription.role),
+      ]);
+    } catch (error: unknown) {
+      throw toPipelineError(error, 'LOAD_GROUND_TRUTH');
+    }
 
-    // These evaluations are independent and dominate processing time, so run
-    // them concurrently before the final synthesis stage.
     const [cvEvaluation, projectEvaluation] = await Promise.all([
       this.evaluateCV(cvBuffer, jobDescription.document, cvRubric),
       this.evaluateProjectReport(
@@ -160,14 +199,11 @@ export class EvaluateService {
         projectRubric,
       ),
     ]);
-
-    // Synthesize final result
     const finalSynthesis = await this.synthesizeFinalResult(
       cvEvaluation,
       projectEvaluation,
     );
 
-    // Return complete evaluation result
     return {
       cv_match_rate: cvEvaluation.cv_match_rate,
       cv_feedback: cvEvaluation.cv_feedback,
@@ -182,11 +218,7 @@ export class EvaluateService {
     jobDescription: string,
     cvRubric: string,
   ): Promise<CVEvaluationResult> {
-    this.logger.log('Starting CV evaluation...');
-
-    try {
-      // Build prompt with context
-      const prompt = `
+    const prompt = `
 ${CV_EVALUATION_SYSTEM_PROMPT}
 
 JOB DESCRIPTION:
@@ -198,37 +230,15 @@ ${cvRubric}
 Please analyze the attached CV PDF and evaluate the candidate based on the job description and scoring rubric above. Provide a structured JSON response.
 `;
 
+    return this.runLlmStage('CV_EVALUATION', async () => {
       const response = await this.llmService.callGeminiFlashLiteWithPDF(
+        'CV_EVALUATION',
         cvBuffer,
         prompt,
-        {
-          temperature: 0.3,
-          responseMimeType: 'application/json',
-        },
+        { temperature: 0.3, responseMimeType: 'application/json' },
       );
-
-      const resultText = response.text;
-      if (!resultText) {
-        throw new Error('LLM response did not contain text output');
-      }
-
-      const payload: unknown = JSON.parse(resultText);
-      const result = CVEvaluationResultSchema.parse(payload);
-
-      this.logger.log('CV evaluation completed successfully');
-      return result;
-    } catch (error: unknown) {
-      const errorMessage = getErrorMessage(error);
-      this.logger.error('CV evaluation failed', {
-        error: errorMessage,
-        stage: 'CV Evaluation (Stage 1/3)',
-      });
-
-      // Re-throw with more context
-      throw new Error(`Failed to evaluate CV: ${errorMessage}`, {
-        cause: error,
-      });
-    }
+      return this.parseLlmResponse(response.text, CVEvaluationResultSchema);
+    });
   }
 
   async evaluateProjectReport(
@@ -236,11 +246,7 @@ Please analyze the attached CV PDF and evaluate the candidate based on the job d
     caseStudyBrief: string,
     projectRubric: string,
   ): Promise<ProjectEvaluationResult> {
-    this.logger.log('Starting Project Report evaluation...');
-
-    try {
-      // Build prompt with context from RAG
-      const prompt = `
+    const prompt = `
 ${PROJECT_EVALUATION_SYSTEM_PROMPT}
 
 CASE STUDY BRIEF (Requirements):
@@ -252,48 +258,25 @@ ${projectRubric}
 Please analyze the attached Project Report PDF and evaluate the candidate's implementation based on the case study requirements and scoring rubric above. Provide a structured JSON response.
 `;
 
+    return this.runLlmStage('PROJECT_EVALUATION', async () => {
       const response = await this.llmService.callGeminiFlashLiteWithPDF(
+        'PROJECT_EVALUATION',
         projectReportBuffer,
         prompt,
-        {
-          temperature: 0.3,
-          responseMimeType: 'application/json',
-        },
+        { temperature: 0.3, responseMimeType: 'application/json' },
       );
-
-      const resultText = response.text;
-      if (!resultText) {
-        throw new Error('LLM response did not contain text output');
-      }
-
-      const payload: unknown = JSON.parse(resultText);
-      const result = ProjectEvaluationResultSchema.parse(payload);
-
-      this.logger.log('Project Report evaluation completed successfully');
-      return result;
-    } catch (error: unknown) {
-      const errorMessage = getErrorMessage(error);
-      this.logger.error('Project Report evaluation failed', {
-        error: errorMessage,
-        stage: 'Project Report Evaluation (Stage 2/3)',
-      });
-
-      // Re-throw with more context
-      throw new Error(`Failed to evaluate Project Report: ${errorMessage}`, {
-        cause: error,
-      });
-    }
+      return this.parseLlmResponse(
+        response.text,
+        ProjectEvaluationResultSchema,
+      );
+    });
   }
 
   async synthesizeFinalResult(
     cvEvaluation: CVEvaluationResult,
     projectEvaluation: ProjectEvaluationResult,
   ): Promise<FinalSynthesisResult> {
-    this.logger.log('Starting final synthesis...');
-
-    try {
-      // Build synthesis prompt with both evaluation results
-      const prompt = `
+    const prompt = `
 ${FINAL_SYNTHESIS_SYSTEM_PROMPT}
 
 CV EVALUATION RESULTS:
@@ -316,40 +299,48 @@ PROJECT EVALUATION RESULTS:
 Based on the above evaluations, provide a comprehensive final synthesis that integrates both CV and project assessment.
 `;
 
-      const response = await this.llmService.callGeminiFlash({
-        contents: [
-          {
-            role: 'user',
-            parts: [{ text: prompt }],
-          },
-        ],
-        config: {
-          temperature: 0.3,
-          responseMimeType: 'application/json',
+    return this.runLlmStage('FINAL_SYNTHESIS', async () => {
+      const response = await this.llmService.callGeminiFlash(
+        'FINAL_SYNTHESIS',
+        {
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          config: { temperature: 0.3, responseMimeType: 'application/json' },
         },
-      });
+      );
+      return this.parseLlmResponse(response.text, FinalSynthesisResultSchema);
+    });
+  }
 
-      const resultText = response.text;
-      if (!resultText) {
-        throw new Error('LLM response did not contain text output');
-      }
-
-      const payload: unknown = JSON.parse(resultText);
-      const result = FinalSynthesisResultSchema.parse(payload);
-
-      this.logger.log('Final synthesis completed successfully');
-      return result;
+  private async runLlmStage<T>(
+    stage: Extract<
+      PipelineStage,
+      'CV_EVALUATION' | 'PROJECT_EVALUATION' | 'FINAL_SYNTHESIS'
+    >,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await operation();
     } catch (error: unknown) {
-      const errorMessage = getErrorMessage(error);
-      this.logger.error('Final synthesis failed', {
-        error: errorMessage,
-        stage: 'Final Synthesis (Stage 3/3)',
+      this.logger.error(`${stage} failed`, {
+        cause: getErrorMessage(error),
       });
+      throw toPipelineError(error, stage);
+    }
+  }
 
-      // Re-throw with more context
-      throw new Error(`Failed to synthesize final result: ${errorMessage}`, {
-        cause: error,
-      });
+  private parseLlmResponse<T>(text: string | undefined, schema: ZodType<T>): T {
+    if (!text) {
+      throw invalidLlmResponse('LLM response did not contain text output');
+    }
+
+    try {
+      const payload: unknown = JSON.parse(text);
+      return schema.parse(payload);
+    } catch (error: unknown) {
+      throw invalidLlmResponse(
+        'LLM response was not valid JSON or schema',
+        error,
+      );
     }
   }
 }

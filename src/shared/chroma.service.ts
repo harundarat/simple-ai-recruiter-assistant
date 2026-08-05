@@ -1,5 +1,4 @@
-import { Injectable } from '@nestjs/common';
-import { GoogleGenAI } from '@google/genai';
+import { Inject, Injectable } from '@nestjs/common';
 import {
   ChromaClient,
   Collection,
@@ -7,29 +6,28 @@ import {
   EmbeddingFunctionSpace,
 } from 'chromadb';
 import { ConfigService } from '@nestjs/config';
+import { GEMINI_CLIENT, GEMINI_RETRY_OPTIONS } from './gemini-client';
+import type { GeminiClient } from './gemini-client';
+import { RetryExecutor } from './retry.executor';
+import type { RetryOptions } from './retry.executor';
+import { GroundTruthNotFoundError } from './pipeline-error';
+import { KnowledgeBase } from './infrastructure.tokens';
 
 export class GeminiEmbeddingFunction implements EmbeddingFunction {
   readonly name = 'google-gemini';
-  private readonly client: GoogleGenAI;
 
-  constructor(apiKey: string) {
-    this.client = new GoogleGenAI({ apiKey });
-  }
+  constructor(
+    private readonly client: GeminiClient,
+    private readonly retryExecutor: RetryExecutor,
+    private readonly retryOptions: RetryOptions,
+  ) {}
 
-  async generate(texts: string[]): Promise<number[][]> {
-    const response = await this.client.models.embedContent({
-      model: 'gemini-embedding-001',
-      contents: texts,
-    });
-    const embeddings = response.embeddings?.map(({ values }) => values);
-
-    if (
-      !embeddings?.every((values): values is number[] => values !== undefined)
-    ) {
-      throw new Error('Gemini returned an incomplete embedding response');
-    }
-
-    return embeddings;
+  generate(texts: string[]): Promise<number[][]> {
+    return this.retryExecutor.execute(
+      'EMBEDDING',
+      () => this.client.embed(texts),
+      this.retryOptions,
+    );
   }
 
   defaultSpace(): EmbeddingFunctionSpace {
@@ -42,22 +40,35 @@ export class GeminiEmbeddingFunction implements EmbeddingFunction {
 }
 
 @Injectable()
-export class ChromaService {
+export class ChromaService implements KnowledgeBase {
   private readonly client: ChromaClient;
+  private readonly collectionName: string;
   private collectionPromise?: Promise<Collection>;
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    configService: ConfigService,
+    @Inject(GEMINI_CLIENT) private readonly geminiClient: GeminiClient,
+    private readonly retryExecutor: RetryExecutor,
+    @Inject(GEMINI_RETRY_OPTIONS)
+    private readonly geminiRetryOptions: RetryOptions,
+  ) {
     this.client = new ChromaClient({
       host: configService.getOrThrow<string>('CHROMA_HOST'),
       port: configService.getOrThrow<number>('CHROMA_PORT'),
     });
+    this.collectionName =
+      configService.get<string>('CHROMA_COLLECTION_NAME') ?? 'ground_truth';
   }
 
-  async getCollection(collectionName: string): Promise<Collection> {
+  async getCollection(
+    collectionName = this.collectionName,
+  ): Promise<Collection> {
     this.collectionPromise ??= this.client.getOrCreateCollection({
       name: collectionName,
       embeddingFunction: new GeminiEmbeddingFunction(
-        this.configService.getOrThrow<string>('GOOGLE_GEMINI_API_KEY'),
+        this.geminiClient,
+        this.retryExecutor,
+        this.geminiRetryOptions,
       ),
     });
 
@@ -72,52 +83,49 @@ export class ChromaService {
   async getJobDescription(
     jobTitle: string,
   ): Promise<{ document: string; role: string }> {
-    const collection = await this.getCollection('ground_truth');
+    const collection = await this.getCollection();
     const results = await collection.query({
       queryTexts: [jobTitle],
       nResults: 1,
       include: ['documents', 'metadatas'],
-      where: {
-        type: 'job_description',
-      },
+      where: { type: 'job_description' },
     });
 
     const document = results.documents[0]?.[0];
     const role = results.metadatas[0]?.[0]?.role;
 
     if (!document) {
-      throw new Error('Job description not found');
+      throw new GroundTruthNotFoundError('Job description not found');
     }
-
     if (typeof role !== 'string' || role.length === 0) {
-      throw new Error('Job description is missing role metadata');
+      throw new GroundTruthNotFoundError(
+        'Job description is missing role metadata',
+      );
     }
 
     return { document, role };
   }
 
   async getCaseStudyBrief(role: string): Promise<string> {
-    const collection = await this.getCollection('ground_truth');
+    const collection = await this.getCollection();
     const results = await collection.query({
       queryTexts: ['case study brief project requirements'],
       nResults: 1,
-      where: {
-        $and: [{ type: 'case_study_brief' }, { role }],
-      },
+      where: { $and: [{ type: 'case_study_brief' }, { role }] },
     });
 
-    if (!results.documents[0] || !results.documents[0][0]) {
-      throw new Error('Case study brief not found');
+    const document = results.documents[0]?.[0];
+    if (!document) {
+      throw new GroundTruthNotFoundError('Case study brief not found');
     }
-
-    return results.documents[0][0];
+    return document;
   }
 
   async getScoringRubric(
     rubricType: 'cv' | 'project',
     role: string,
   ): Promise<string> {
-    const collection = await this.getCollection('ground_truth');
+    const collection = await this.getCollection();
     const results = await collection.query({
       queryTexts: [
         rubricType === 'cv'
@@ -125,15 +133,15 @@ export class ChromaService {
           : 'project evaluation scoring rubric parameters',
       ],
       nResults: 1,
-      where: {
-        $and: [{ type: 'rubric' }, { for: rubricType }, { role }],
-      },
+      where: { $and: [{ type: 'rubric' }, { for: rubricType }, { role }] },
     });
 
-    if (!results.documents[0] || !results.documents[0][0]) {
-      throw new Error(`Scoring rubric for ${rubricType} not found`);
+    const document = results.documents[0]?.[0];
+    if (!document) {
+      throw new GroundTruthNotFoundError(
+        `Scoring rubric for ${rubricType} not found`,
+      );
     }
-
-    return results.documents[0][0];
+    return document;
   }
 }

@@ -1,0 +1,26 @@
+-- CreateEnum
+CREATE TYPE "EvaluationErrorCode" AS ENUM (
+  'QUEUE_UNAVAILABLE',
+  'STORAGE_UNAVAILABLE',
+  'STORAGE_OBJECT_NOT_FOUND',
+  'KNOWLEDGE_BASE_UNAVAILABLE',
+  'GROUND_TRUTH_NOT_FOUND',
+  'LLM_UNAVAILABLE',
+  'LLM_INVALID_RESPONSE',
+  'INTERNAL_ERROR'
+);
+
+-- CreateEnum
+CREATE TYPE "EvaluationFailedStage" AS ENUM (
+  'ENQUEUE',
+  'LOAD_FILES',
+  'LOAD_GROUND_TRUTH',
+  'CV_EVALUATION',
+  'PROJECT_EVALUATION',
+  'FINAL_SYNTHESIS'
+);
+
+-- AlterTable
+ALTER TABLE "Evaluation"
+ADD COLUMN "error_code" "EvaluationErrorCode",
+ADD COLUMN "failed_stage" "EvaluationFailedStage";

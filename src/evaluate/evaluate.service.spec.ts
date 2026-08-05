@@ -4,19 +4,20 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Queue } from 'bullmq';
 import { EvaluateService } from './evaluate.service';
 import { PrismaService } from '../shared/prisma.service';
 import { S3Service } from '../shared/s3.service';
 import { LLMService } from '../shared/llm.service';
 import { ChromaService } from '../shared/chroma.service';
+import { RetryExecutor } from '../shared/retry.executor';
+import { PipelineError } from '../shared/pipeline-error';
 
 describe('EvaluateService.startEvaluation', () => {
   const cvFindUnique = jest.fn<() => Promise<unknown>>();
   const projectFindUnique = jest.fn<() => Promise<unknown>>();
   const evaluationCreate = jest.fn<() => Promise<unknown>>();
   const evaluationUpdate = jest.fn<() => Promise<unknown>>();
-  const queueAdd = jest.fn<() => Promise<unknown>>();
+  const queueAdd = jest.fn<() => Promise<void>>();
 
   const prismaService = {
     cV: { findUnique: cvFindUnique },
@@ -32,8 +33,9 @@ describe('EvaluateService.startEvaluation', () => {
     {} as S3Service,
     {} as LLMService,
     {} as ChromaService,
-    {} as ConfigService,
-    { add: queueAdd } as unknown as Queue,
+    { get: jest.fn(() => 0) } as unknown as ConfigService,
+    { enqueue: queueAdd },
+    new RetryExecutor(),
   );
 
   beforeEach(() => {
@@ -59,18 +61,13 @@ describe('EvaluateService.startEvaluation', () => {
       },
     });
     expect(queueAdd).toHaveBeenCalledWith(
-      'process-evaluation',
       {
         evaluationId: 42,
         jobTitle: 'Backend Developer',
         cvId: 1,
         projectReportId: 2,
       },
-      {
-        jobId: 'evaluation-42',
-        removeOnComplete: 1_000,
-        removeOnFail: 5_000,
-      },
+      'evaluation-42',
     );
   });
 
@@ -102,10 +99,13 @@ describe('EvaluateService.startEvaluation', () => {
       where: { id: 42 },
       data: {
         status: 'failed',
-        error_message: 'Failed to enqueue evaluation: Redis unavailable',
+        error_code: 'QUEUE_UNAVAILABLE',
+        failed_stage: 'ENQUEUE',
+        error_message: 'Evaluation queue is temporarily unavailable',
         completed_at: expect.any(Date),
       },
     });
+    expect(queueAdd).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -183,7 +183,8 @@ describe('EvaluateService pipeline', () => {
     {
       getOrThrow: jest.fn(() => 'candidate-bucket'),
     } as unknown as ConfigService,
-    {} as Queue,
+    { enqueue: jest.fn(() => Promise.resolve()) },
+    new RetryExecutor(),
   );
 
   beforeEach(() => {
@@ -237,7 +238,11 @@ describe('EvaluateService pipeline', () => {
 
     await expect(
       service.evaluateCV(Buffer.from('pdf'), 'Job', 'Rubric'),
-    ).rejects.toThrow('Failed to evaluate CV');
+    ).rejects.toMatchObject<Partial<PipelineError>>({
+      errorCode: 'LLM_INVALID_RESPONSE',
+      failedStage: 'CV_EVALUATION',
+      retryable: false,
+    });
   });
 
   it('rejects an empty LLM response', async () => {
@@ -246,6 +251,10 @@ describe('EvaluateService pipeline', () => {
 
     await expect(
       service.evaluateProjectReport(Buffer.from('pdf'), 'Brief', 'Rubric'),
-    ).rejects.toThrow('LLM response did not contain text output');
+    ).rejects.toMatchObject<Partial<PipelineError>>({
+      errorCode: 'LLM_INVALID_RESPONSE',
+      failedStage: 'PROJECT_EVALUATION',
+      retryable: false,
+    });
   });
 });

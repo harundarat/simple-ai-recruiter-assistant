@@ -1,11 +1,17 @@
-import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import {
+  DeleteObjectsCommand,
+  GetObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { FileStore, StoredFileReference } from './infrastructure.tokens';
 
 @Injectable()
-export class S3Service {
+export class S3Service implements FileStore {
   private readonly s3Client: S3Client;
   constructor(private readonly configService: ConfigService) {
+    const endpoint = configService.get<string>('S3_ENDPOINT');
     this.s3Client = new S3Client({
       region: configService.getOrThrow<string>('S3_REGION'),
       credentials: {
@@ -14,6 +20,13 @@ export class S3Service {
           'S3_SECRET_ACCESS_KEY',
         ),
       },
+      ...(endpoint
+        ? {
+            endpoint,
+            forcePathStyle:
+              configService.get<boolean>('S3_FORCE_PATH_STYLE') ?? true,
+          }
+        : {}),
     });
   }
 
@@ -30,5 +43,25 @@ export class S3Service {
     }
 
     return Buffer.from(await response.Body.transformToByteArray());
+  }
+
+  async deleteFiles(files: StoredFileReference[]): Promise<void> {
+    const filesByBucket = new Map<string, string[]>();
+    for (const file of files) {
+      const keys = filesByBucket.get(file.bucket) ?? [];
+      keys.push(file.key);
+      filesByBucket.set(file.bucket, keys);
+    }
+
+    await Promise.all(
+      [...filesByBucket.entries()].map(([bucket, keys]) =>
+        this.s3Client.send(
+          new DeleteObjectsCommand({
+            Bucket: bucket,
+            Delete: { Objects: keys.map((Key) => ({ Key })), Quiet: true },
+          }),
+        ),
+      ),
+    );
   }
 }

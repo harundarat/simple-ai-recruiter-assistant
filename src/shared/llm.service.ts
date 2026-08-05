@@ -1,93 +1,78 @@
-import { GoogleGenAI, GenerateContentParameters } from '@google/genai';
-import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { Retry } from './retry.decorator';
-import { PDF_RETRY_CONFIG, TEXT_RETRY_CONFIG } from './retry.config';
+import { GenerateContentParameters } from '@google/genai';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  GEMINI_CLIENT,
+  GEMINI_RETRY_OPTIONS,
+  GeminiGenerationOperation,
+} from './gemini-client';
+import type { GeminiClient } from './gemini-client';
+import { RetryExecutor } from './retry.executor';
+import type { RetryOptions } from './retry.executor';
 
 type LLMCallParameters = Omit<GenerateContentParameters, 'model'>;
 
 @Injectable()
 export class LLMService {
   private readonly logger = new Logger(LLMService.name);
-  private gemini: GoogleGenAI;
 
-  constructor(private readonly configService: ConfigService) {
-    this.gemini = new GoogleGenAI({
-      apiKey: this.configService.getOrThrow<string>('GOOGLE_GEMINI_API_KEY'),
-    });
-  }
+  constructor(
+    @Inject(GEMINI_CLIENT) private readonly gemini: GeminiClient,
+    private readonly retryExecutor: RetryExecutor,
+    @Inject(GEMINI_RETRY_OPTIONS)
+    private readonly retryOptions: RetryOptions,
+  ) {}
 
-  /**
-   * Calls Gemini Flash Lite model with PDF input
-   * Used for CV and Project Report evaluation (multimodal PDF processing)
-   *
-   * Retry configuration: PDF_RETRY_CONFIG
-   * - Max retries: 4
-   * - Initial delay: 1000ms
-   * - Timeout: 90s (PDF processing is slower)
-   *
-   * @param pdfBuffer - PDF file as buffer
-   * @param prompt - Text prompt for evaluation
-   * @param config - Optional LLM configuration (temperature, etc.)
-   * @returns LLM response
-   */
-  @Retry(PDF_RETRY_CONFIG)
   async callGeminiFlashLiteWithPDF(
+    operation: Extract<
+      GeminiGenerationOperation,
+      'CV_EVALUATION' | 'PROJECT_EVALUATION'
+    >,
     pdfBuffer: Buffer,
     prompt: string,
     config?: LLMCallParameters['config'],
   ) {
     this.logger.debug(
-      `Calling Gemini Flash Lite with PDF (size: ${pdfBuffer.length} bytes)`,
+      `Calling Gemini Flash Lite for ${operation} (PDF size: ${pdfBuffer.length} bytes)`,
     );
 
-    const response = await this.gemini.models.generateContent({
-      model: 'gemini-2.5-flash-lite',
-      contents: [
-        {
-          role: 'user',
-          parts: [
+    return this.retryExecutor.execute(
+      operation,
+      () =>
+        this.gemini.generateContent(operation, {
+          model: 'gemini-2.5-flash-lite',
+          contents: [
             {
-              inlineData: {
-                mimeType: 'application/pdf',
-                data: pdfBuffer.toString('base64'),
-              },
-            },
-            {
-              text: prompt,
+              role: 'user',
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: 'application/pdf',
+                    data: pdfBuffer.toString('base64'),
+                  },
+                },
+                { text: prompt },
+              ],
             },
           ],
-        },
-      ],
-      config,
-    });
-
-    this.logger.debug('Gemini Flash Lite with PDF call succeeded');
-    return response;
+          config,
+        }),
+      this.retryOptions,
+    );
   }
 
-  /**
-   * Calls Gemini Flash model with text input
-   * Used for final synthesis (combining CV and Project evaluation results)
-   *
-   * Retry configuration: TEXT_RETRY_CONFIG
-   * - Max retries: 3
-   * - Initial delay: 500ms
-   * - Timeout: 60s
-   *
-   * @param params - LLM call parameters (contents, config, etc.)
-   * @returns LLM response
-   */
-  @Retry(TEXT_RETRY_CONFIG)
-  async callGeminiFlash(params: LLMCallParameters) {
-    this.logger.debug('Calling Gemini Flash (text-only)');
-
-    const response = await this.gemini.models.generateContent({
-      model: 'gemini-2.5-flash',
-      ...params,
-    });
-
-    this.logger.debug('Gemini Flash call succeeded');
-    return response;
+  async callGeminiFlash(
+    operation: Extract<GeminiGenerationOperation, 'FINAL_SYNTHESIS'>,
+    params: LLMCallParameters,
+  ) {
+    this.logger.debug(`Calling Gemini Flash for ${operation}`);
+    return this.retryExecutor.execute(
+      operation,
+      () =>
+        this.gemini.generateContent(operation, {
+          model: 'gemini-2.5-flash',
+          ...params,
+        }),
+      this.retryOptions,
+    );
   }
 }

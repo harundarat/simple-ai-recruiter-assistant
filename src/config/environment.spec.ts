@@ -19,6 +19,27 @@ describe('validateEnvironment', () => {
         REDIS_PORT: 6379,
         CHROMA_HOST: 'localhost',
         CHROMA_PORT: 8000,
+        CHROMA_COLLECTION_NAME: 'ground_truth',
+        S3_FORCE_PATH_STYLE: false,
+      }),
+    );
+  });
+
+  it('parses MinIO and retry settings for deterministic E2E runs', () => {
+    expect(
+      validateEnvironment({
+        ...validEnvironment,
+        S3_ENDPOINT: 'http://localhost:19000',
+        S3_FORCE_PATH_STYLE: 'true',
+        GEMINI_RETRY_DELAY_MS: '5',
+        RETRY_JITTER_RATIO: '0',
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        S3_ENDPOINT: 'http://localhost:19000',
+        S3_FORCE_PATH_STYLE: true,
+        GEMINI_RETRY_DELAY_MS: 5,
+        RETRY_JITTER_RATIO: 0,
       }),
     );
   });

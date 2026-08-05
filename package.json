@@ -40,6 +40,8 @@
     "@prisma/client": "7.9.1",
     "bullmq": "^5.81.3",
     "chromadb": "^3.5.0",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
     "multer": "^2.2.0",
     "multer-s3": "^3.0.1",
     "reflect-metadata": "^0.2.2",

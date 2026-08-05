@@ -1,9 +1,9 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { Injectable, Logger } from '@nestjs/common';
-import { PrismaService } from 'src/shared/prisma.service';
+import { PrismaService } from '../shared/prisma.service';
 import { EvaluateService } from './evaluate.service';
-import { isRetryableError, getErrorMessage } from 'src/shared/retry.utils';
+import { isRetryableError, getErrorMessage } from '../shared/retry.utils';
 
 interface EvaluationJobData {
   evaluationId: number;

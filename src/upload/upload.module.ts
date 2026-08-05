@@ -3,7 +3,7 @@ import { UploadController } from './upload.controller';
 import { UploadService } from './upload.service';
 import { SharedModule } from '../shared/shared.module';
 import { MulterModule } from '@nestjs/platform-express';
-import { S3Service } from 'src/shared/s3.service';
+import { S3Service } from '../shared/s3.service';
 import multerS3 from 'multer-s3';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import {

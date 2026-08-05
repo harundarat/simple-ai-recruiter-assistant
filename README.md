@@ -185,11 +185,12 @@ simple-ai-recruiter-assistant/
 │   │       └── final-synthesis.prompt.ts
 │   ├── shared/
 │   │   ├── prisma.service.ts     # Prisma client singleton
-│   │   ├── s3.service.ts         # AWS S3 operations
-│   │   ├── llm.service.ts        # Gemini API wrapper (with @Retry decorator)
+│   │   ├── s3.service.ts         # AWS S3 / MinIO operations
+│   │   ├── gemini-client.ts      # Injectable production Gemini adapter
+│   │   ├── llm.service.ts        # Operation-specific Gemini calls
 │   │   ├── chroma.service.ts     # ChromaDB vector search
-│   │   ├── retry.decorator.ts    # Retry decorator with exponential backoff
-│   │   ├── retry.config.ts       # Retry configuration (PDF vs text)
+│   │   ├── retry.executor.ts     # Injectable bounded retry executor
+│   │   ├── pipeline-error.ts     # Structured pipeline error mapping
 │   │   ├── retry.utils.ts        # Retry utility functions
 │   │   └── shared.module.ts
 │   ├── app.module.ts
@@ -210,7 +211,7 @@ Before running this application, ensure you have:
 1. **Node.js 24 or higher**
 2. **pnpm 11** package manager
 3. **Docker with Docker Compose** (for PostgreSQL, Redis, and ChromaDB)
-4. **AWS Account** with S3 bucket configured
+4. **AWS Account** with S3 bucket configured (production only; local/E2E uses MinIO)
 5. **Google Gemini API Key**
 
 ---
@@ -232,7 +233,7 @@ pnpm install
 
 ### 3. Start local services
 
-The Compose stack starts PostgreSQL 18, Redis 8, and ChromaDB 1.5 with persistent named volumes and health checks where supported.
+The Compose stack starts PostgreSQL 18, Redis 8, ChromaDB 1.5, and a pinned development-only MinIO server. It also creates `S3_BUCKET_NAME` idempotently. All published ports bind to localhost.
 
 ```bash
 docker compose up -d
@@ -267,6 +268,11 @@ GOOGLE_GEMINI_API_KEY="your-gemini-api-key"
 # ChromaDB
 CHROMA_HOST="localhost"
 CHROMA_PORT="8000"
+CHROMA_COLLECTION_NAME="ground_truth"
+
+# Optional S3-compatible local endpoint. Leave unset in production to use AWS.
+S3_ENDPOINT="http://localhost:9000"
+S3_FORCE_PATH_STYLE="true"
 
 # Application
 PORT="3000"
@@ -434,7 +440,7 @@ curl -X POST http://localhost:3000/upload \
 **Error Responses:**
 
 - `400 Bad Request` - Missing files, invalid file format, or file too large
-- `500 Internal Server Error` - S3 upload failure or database error
+- `503 Service Unavailable` - Object storage or upload persistence unavailable
 
 **Example Error Messages:**
 
@@ -559,7 +565,10 @@ or
 {
   "id": 456,
   "status": "failed",
-  "error_message": "LLM API timeout after 3 retry attempts"
+  "error_code": "LLM_UNAVAILABLE",
+  "failed_stage": "CV_EVALUATION",
+  "error_message": "AI evaluation service is temporarily unavailable",
+  "retry_count": 3
 }
 ```
 
@@ -766,12 +775,10 @@ Output (JSON):
 **LLM-level retries (automatic with exponential backoff):**
 
 ```typescript
-@Retry(PDF_RETRY_CONFIG) // 4 retries, 1s initial delay
-async callGeminiFlashLiteWithPDF() {
-  // If fails: retry with 1s → 2s → 4s → 8s delays
-  // Detects transient errors (timeouts, rate limits)
-  // Fails fast on permanent errors (auth failures)
-}
+await retryExecutor.execute(operation, callGemini, {
+  maxAttempts: 2,
+  // Timeouts, HTTP 429/5xx, and network failures are transient.
+});
 ```
 
 **Processor-level error handling:**
@@ -782,19 +789,19 @@ try {
   // Each stage automatically retries on transient failures
 } catch (error) {
   // Log error with detailed context
-  // Classify error (retryable vs permanent)
-  // Increment retry_count
-  // Store error_message
-  // Update status to 'failed'
-  // Throw error
+  // Increment retry_count once per failed processing attempt.
+  // Retryable + attempts remaining: set queued and throw to BullMQ.
+  // Permanent: persist structured failure and throw UnrecoverableError.
+  // Exhausted: persist structured terminal failure.
 }
 ```
 
 **Key implementation:**
 
-- Retry logic: `src/shared/retry.decorator.ts`, `src/shared/retry.utils.ts`
-- Processor error handling: `src/evaluate/evaluate.processor.ts:64-106`
-- LLM service: `src/shared/llm.service.ts:34-67, 81-92`
+- Retry logic: `src/shared/retry.executor.ts`, `src/shared/retry.utils.ts`
+- Error mapping: `src/shared/pipeline-error.ts`
+- Processor error handling: `src/evaluate/evaluate.processor.ts`
+- LLM service: `src/shared/llm.service.ts`
 
 ### 5. RAG (Retrieval-Augmented Generation)
 
@@ -976,10 +983,11 @@ const jobDescription =
 - ✅ **File upload validation** (dual-layer: Multer + validation pipes)
 - ✅ **Automatic retry with exponential backoff** for LLM API calls
 - ✅ **Smart error classification** (retryable vs permanent errors)
-- ✅ Try-catch blocks around LLM calls with stage-specific error messages
-- ✅ Error messages stored in database
-- ✅ Retry count tracking
-- ✅ Status updates (failed state)
+- ✅ Structured public errors with error code and failed stage
+- ✅ Internal causes logged without exposing them through the database/API
+- ✅ Retry count tracks failed worker processing attempts
+- ✅ Pending Bull retries return records to `queued`; only terminal failures become `failed`
+- ✅ Uploaded objects are cleaned up after pair validation or database persistence failures
 - ✅ Input validation for API requests
 
 **File validation includes:**
@@ -991,13 +999,14 @@ const jobDescription =
 
 **Retry mechanism with exponential backoff:**
 
-Implemented using decorator pattern (`@Retry`) with configurable retry policies:
+Implemented through injectable retry policies and infrastructure gateways:
 
-| LLM Operation      | Model      | Max Retries | Initial Delay | Backoff Multiplier |
-| ------------------ | ---------- | ----------- | ------------- | ------------------ |
-| CV Evaluation      | Flash Lite | 4           | 1000ms        | 2x                 |
-| Project Evaluation | Flash Lite | 4           | 1000ms        | 2x                 |
-| Final Synthesis    | Flash      | 3           | 500ms         | 2x                 |
+| Boundary                 | Total attempts | Backoff                                      |
+| ------------------------ | -------------- | -------------------------------------------- |
+| Each Gemini operation    | 2              | Exponential, bounded, 20% jitter             |
+| Redis enqueue            | 2              | Same stable `jobId` for idempotency          |
+| Each BullMQ worker job   | 3              | Exponential from 1 second, 20% jitter        |
+| E2E equivalents          | Same counts    | Short delays and no jitter for deterministic |
 
 **Retry-able errors (will retry):**
 
@@ -1016,12 +1025,11 @@ Implemented using decorator pattern (`@Retry`) with configurable retry policies:
 **Example retry flow:**
 
 ```
-Attempt 1: Rate limit (429) → Wait 1s
-Attempt 2: Timeout → Wait 2s
-Attempt 3: Success! ✓
+Gemini attempt 1: Rate limit (429) → bounded wait
+Gemini attempt 2: still unavailable → BullMQ schedules the next job attempt
 ```
 
-**Implementation details:** `src/shared/retry.decorator.ts`, `src/shared/retry.utils.ts`, `src/shared/retry.config.ts`
+**Implementation details:** `src/shared/retry.executor.ts`, `src/shared/pipeline-error.ts`, and `src/evaluate/evaluate.processor.ts`
 
 **Not implemented (future work):**
 
@@ -1092,13 +1100,13 @@ Attempt 3: Success! ✓
 
 ### Current Testing Status
 
-The automated suite currently contains **54 unit tests** and **6 HTTP integration tests**. Unit coverage is **82.6% lines** and **81.6% statements**, with an enforced 80% threshold. External services are mocked in automated tests so the suite is deterministic; the ingestion verification script remains available for a live ChromaDB check.
+The automated suite contains **71 unit tests** and **10 E2E scenarios**. Unit tests isolate services. E2E starts real PostgreSQL, Redis/BullMQ, ChromaDB, and MinIO while replacing only Gemini generation/embeddings with a deterministic fake. It applies migrations, seeds Chroma from literal documents, runs serially, and always removes the isolated Compose project and volumes through a cleanup trap.
 
 ```bash
 # Unit tests
 pnpm test
 
-# HTTP integration tests (Nest router, pipes, and controllers)
+# Full local-infrastructure E2E (Docker required; no real Gemini key/network call)
 pnpm run test:e2e
 
 # Unit tests with enforced coverage threshold
@@ -1193,7 +1201,7 @@ Expected: 400 Bad Request with error message
 
 ### Live Integration Checks
 
-Use `pnpm ts-node seed/test-chromadb.ts` after seeding to verify a running ChromaDB instance. A full external-service E2E flow (real S3, Redis worker, Gemini, and PostgreSQL) remains intentionally separate from the deterministic automated suite.
+Use `pnpm ts-node seed/test-chromadb.ts` after production-style PDF seeding to inspect a development Chroma collection. The automated E2E suite deliberately uses real local infrastructure plus fake external AI; live Gemini and AWS S3 smoke checks remain separate and optional.
 
 ---
 
@@ -1204,7 +1212,8 @@ Use `pnpm ts-node seed/test-chromadb.ts` after seeding to verify a running Chrom
 1. **Automated Tests**
    - ✅ Unit tests for services (80% coverage threshold)
    - ✅ Integration tests for API endpoints
-   - [ ] E2E tests for critical user flows with live external services
+   - ✅ E2E tests with real local PostgreSQL, Redis, ChromaDB, and MinIO
+   - [ ] Optional live Gemini and AWS S3 smoke tests
 
 2. **Advanced Error Handling**
    - ✅ ~~Exponential backoff for LLM API retries~~ **(IMPLEMENTED)**

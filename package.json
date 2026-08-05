@@ -13,7 +13,7 @@
     "build": "nest build",
     "postinstall": "prisma generate",
     "db:generate": "prisma generate",
-    "typecheck": "tsc --noEmit -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit --incremental false -p tsconfig.build.json",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "start:dev": "nest start --watch",

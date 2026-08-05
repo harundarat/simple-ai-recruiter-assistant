@@ -108,3 +108,144 @@ describe('EvaluateService.startEvaluation', () => {
     });
   });
 });
+
+const cvEvaluation = {
+  technical_skills_score: 4,
+  technical_skills_reasoning: 'Strong backend skills',
+  experience_score: 4,
+  experience_reasoning: 'Relevant experience',
+  achievements_score: 3,
+  achievements_reasoning: 'Some measurable impact',
+  cultural_fit_score: 5,
+  cultural_fit_reasoning: 'Strong collaboration',
+  cv_match_rate: 0.8,
+  cv_feedback: 'Strong overall CV',
+};
+
+const projectEvaluation = {
+  correctness_score: 5,
+  correctness_reasoning: 'Requirements met',
+  code_quality_score: 4,
+  code_quality_reasoning: 'Well structured',
+  resilience_score: 4,
+  resilience_reasoning: 'Handles failures',
+  documentation_score: 4,
+  documentation_reasoning: 'Clear documentation',
+  creativity_score: 3,
+  creativity_reasoning: 'Useful additions',
+  project_score: 4.2,
+  project_feedback: 'Strong implementation',
+};
+
+const finalSynthesis = {
+  overall_summary: 'Strong candidate for the role',
+  key_strengths: ['Backend engineering', 'Communication'],
+  areas_for_improvement: ['Production AI experience'],
+  hiring_recommendation: 'hire',
+  confidence_level: 4,
+  confidence_reasoning: 'Evidence is consistent',
+  interview_focus_areas: ['System design'],
+  role_fit_percentage: 84,
+  next_steps: 'Proceed to technical interview',
+};
+
+describe('EvaluateService pipeline', () => {
+  const getFile = jest.fn<() => Promise<Buffer>>();
+  const getJobDescription = jest.fn<() => Promise<unknown>>();
+  const getCaseStudyBrief = jest.fn<() => Promise<string>>();
+  const getScoringRubric = jest.fn<() => Promise<string>>();
+  const callPDF = jest.fn<() => Promise<unknown>>();
+  const callText = jest.fn<() => Promise<unknown>>();
+
+  const service = new EvaluateService(
+    {
+      cV: {
+        findUnique: jest.fn(() =>
+          Promise.resolve({ id: 1, hosted_name: 'cv/file.pdf' }),
+        ),
+      },
+      projectReport: {
+        findUnique: jest.fn(() =>
+          Promise.resolve({ id: 2, hosted_name: 'project/file.pdf' }),
+        ),
+      },
+    } as unknown as PrismaService,
+    { getFile } as unknown as S3Service,
+    {
+      callGeminiFlashLiteWithPDF: callPDF,
+      callGeminiFlash: callText,
+    } as unknown as LLMService,
+    {
+      getJobDescription,
+      getCaseStudyBrief,
+      getScoringRubric,
+    } as unknown as ChromaService,
+    {
+      getOrThrow: jest.fn(() => 'candidate-bucket'),
+    } as unknown as ConfigService,
+    {} as Queue,
+  );
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    getFile.mockResolvedValue(Buffer.from('pdf'));
+    getJobDescription.mockResolvedValue({
+      document: 'Backend job description',
+      role: 'backend',
+    });
+    getCaseStudyBrief.mockResolvedValue('Case study requirements');
+    getScoringRubric.mockResolvedValue('Scoring rubric');
+    callPDF
+      .mockResolvedValueOnce({ text: JSON.stringify(cvEvaluation) })
+      .mockResolvedValueOnce({ text: JSON.stringify(projectEvaluation) });
+    callText.mockResolvedValue({ text: JSON.stringify(finalSynthesis) });
+  });
+
+  it('evaluates both documents against role-scoped ground truth', async () => {
+    await expect(
+      service.performEvaluation('Backend Developer', 1, 2),
+    ).resolves.toEqual({
+      cv_match_rate: 0.8,
+      cv_feedback: 'Strong overall CV',
+      project_score: 4.2,
+      project_feedback: 'Strong implementation',
+      overall_summary: 'Strong candidate for the role',
+    });
+
+    expect(getFile).toHaveBeenNthCalledWith(
+      1,
+      'candidate-bucket',
+      'cv/file.pdf',
+    );
+    expect(getFile).toHaveBeenNthCalledWith(
+      2,
+      'candidate-bucket',
+      'project/file.pdf',
+    );
+    expect(getCaseStudyBrief).toHaveBeenCalledWith('backend');
+    expect(getScoringRubric).toHaveBeenCalledWith('cv', 'backend');
+    expect(getScoringRubric).toHaveBeenCalledWith('project', 'backend');
+    expect(callPDF).toHaveBeenCalledTimes(2);
+    expect(callText).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an out-of-range LLM score', async () => {
+    callPDF.mockReset();
+    callPDF.mockResolvedValue({
+      text: JSON.stringify({ ...cvEvaluation, technical_skills_score: 10 }),
+    });
+
+    await expect(
+      service.evaluateCV(Buffer.from('pdf'), 'Job', 'Rubric'),
+    ).rejects.toThrow('Failed to evaluate CV');
+  });
+
+  it('rejects an empty LLM response', async () => {
+    callPDF.mockReset();
+    callPDF.mockResolvedValue({ text: undefined });
+
+    await expect(
+      service.evaluateProjectReport(Buffer.from('pdf'), 'Brief', 'Rubric'),
+    ).rejects.toThrow('LLM response did not contain text output');
+  });
+});

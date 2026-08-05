@@ -150,19 +150,16 @@ export class EvaluateService {
       this.chromaService.getScoringRubric('project', jobDescription.role),
     ]);
 
-    // Evaluate CV
-    const cvEvaluation = await this.evaluateCV(
-      cvBuffer,
-      jobDescription.document,
-      cvRubric,
-    );
-
-    // Evaluate Project Report
-    const projectEvaluation = await this.evaluateProjectReport(
-      projectReportBuffer,
-      caseStudyBrief,
-      projectRubric,
-    );
+    // These evaluations are independent and dominate processing time, so run
+    // them concurrently before the final synthesis stage.
+    const [cvEvaluation, projectEvaluation] = await Promise.all([
+      this.evaluateCV(cvBuffer, jobDescription.document, cvRubric),
+      this.evaluateProjectReport(
+        projectReportBuffer,
+        caseStudyBrief,
+        projectRubric,
+      ),
+    ]);
 
     // Synthesize final result
     const finalSynthesis = await this.synthesizeFinalResult(

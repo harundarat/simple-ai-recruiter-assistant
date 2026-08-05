@@ -1,7 +1,45 @@
 import { Injectable } from '@nestjs/common';
-import { ChromaClient, Collection } from 'chromadb';
-import { GoogleGeminiEmbeddingFunction } from '@chroma-core/google-gemini';
+import { GoogleGenAI } from '@google/genai';
+import {
+  ChromaClient,
+  Collection,
+  EmbeddingFunction,
+  EmbeddingFunctionSpace,
+} from 'chromadb';
 import { ConfigService } from '@nestjs/config';
+
+export class GeminiEmbeddingFunction implements EmbeddingFunction {
+  readonly name = 'google-gemini';
+  private readonly client: GoogleGenAI;
+
+  constructor(apiKey: string) {
+    this.client = new GoogleGenAI({ apiKey });
+  }
+
+  async generate(texts: string[]): Promise<number[][]> {
+    const response = await this.client.models.embedContent({
+      model: 'gemini-embedding-001',
+      contents: texts,
+    });
+    const embeddings = response.embeddings?.map(({ values }) => values);
+
+    if (
+      !embeddings?.every((values): values is number[] => values !== undefined)
+    ) {
+      throw new Error('Gemini returned an incomplete embedding response');
+    }
+
+    return embeddings;
+  }
+
+  defaultSpace(): EmbeddingFunctionSpace {
+    return 'cosine';
+  }
+
+  supportedSpaces(): EmbeddingFunctionSpace[] {
+    return ['cosine', 'l2', 'ip'];
+  }
+}
 
 @Injectable()
 export class ChromaService {
@@ -18,9 +56,9 @@ export class ChromaService {
   async getCollection(collectionName: string): Promise<Collection> {
     this.collectionPromise ??= this.client.getOrCreateCollection({
       name: collectionName,
-      embeddingFunction: new GoogleGeminiEmbeddingFunction({
-        apiKey: this.configService.getOrThrow<string>('GOOGLE_GEMINI_API_KEY'),
-      }),
+      embeddingFunction: new GeminiEmbeddingFunction(
+        this.configService.getOrThrow<string>('GOOGLE_GEMINI_API_KEY'),
+      ),
     });
 
     try {

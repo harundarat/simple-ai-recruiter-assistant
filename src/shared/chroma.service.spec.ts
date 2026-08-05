@@ -1,19 +1,27 @@
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { ConfigService } from '@nestjs/config';
+import { GoogleGenAI } from '@google/genai';
 import { ChromaClient, Collection } from 'chromadb';
-import { ChromaService } from './chroma.service';
+import { ChromaService, GeminiEmbeddingFunction } from './chroma.service';
 
 jest.mock('chromadb');
-jest.mock('@chroma-core/google-gemini');
+jest.mock('@google/genai');
 
 describe('ChromaService', () => {
   const query = jest.fn<() => Promise<unknown>>();
+  const embedContent = jest.fn<() => Promise<unknown>>();
   const collection = { query } as unknown as Collection;
   const getOrCreateCollection = jest.fn(() => Promise.resolve(collection));
   let service: ChromaService;
 
   beforeEach(() => {
     jest.clearAllMocks();
+    embedContent.mockResolvedValue({ embeddings: [{ values: [0.1, 0.2] }] });
+    jest
+      .mocked(GoogleGenAI)
+      .mockImplementation(
+        () => ({ models: { embedContent } }) as unknown as GoogleGenAI,
+      );
     jest.mocked(ChromaClient).mockImplementation(
       () =>
         ({
@@ -29,6 +37,29 @@ describe('ChromaService', () => {
       return values[name];
     });
     service = new ChromaService({ getOrThrow } as unknown as ConfigService);
+  });
+
+  it('generates embeddings with the current Gemini SDK', async () => {
+    const embeddingFunction = new GeminiEmbeddingFunction('gemini-key');
+
+    await expect(embeddingFunction.generate(['Backend role'])).resolves.toEqual(
+      [[0.1, 0.2]],
+    );
+    expect(GoogleGenAI).toHaveBeenLastCalledWith({ apiKey: 'gemini-key' });
+    expect(embedContent).toHaveBeenCalledWith({
+      model: 'gemini-embedding-001',
+      contents: ['Backend role'],
+    });
+    expect(embeddingFunction.defaultSpace()).toBe('cosine');
+  });
+
+  it('rejects incomplete Gemini embedding responses', async () => {
+    embedContent.mockResolvedValueOnce({ embeddings: [{}] });
+    const embeddingFunction = new GeminiEmbeddingFunction('gemini-key');
+
+    await expect(embeddingFunction.generate(['Backend role'])).rejects.toThrow(
+      'Gemini returned an incomplete embedding response',
+    );
   });
 
   it('configures and reuses one Chroma collection', async () => {

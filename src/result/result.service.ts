@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'src/shared/prisma.service';
 
 @Injectable()
@@ -11,7 +11,7 @@ export class ResultService {
     });
 
     if (!evaluation) {
-      throw new BadRequestException('Evaluation not found');
+      throw new NotFoundException('Evaluation not found');
     }
 
     // If status is queued or processing, return minimal info

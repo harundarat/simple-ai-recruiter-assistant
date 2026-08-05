@@ -11,7 +11,7 @@ import { PROJECT_EVALUATION_SYSTEM_PROMPT } from './prompt/project-report-evalua
 import { FINAL_SYNTHESIS_SYSTEM_PROMPT } from './prompt/final-synthesis.prompt';
 import { CVEvaluationResult } from './dto/cv-evaluation-result.dto';
 import { ProjectEvaluationResult } from './dto/project-evaluation-result.dto';
-import { EvaluationStatus } from '@prisma/client';
+import { EvaluationStatus } from '../generated/prisma/enums';
 
 @Injectable()
 export class EvaluateService {

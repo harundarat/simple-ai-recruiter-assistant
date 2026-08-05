@@ -1,4 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
+import { CircuitOpenError } from './circuit-breaker.executor';
 import { invalidLlmResponse, toPipelineError } from './pipeline-error';
 
 describe('pipeline error mapping', () => {
@@ -33,4 +34,20 @@ describe('pipeline error mapping', () => {
       retryable: false,
     });
   });
+
+  it.each([
+    ['redis', 'enqueue', 'ENQUEUE', 'QUEUE_UNAVAILABLE'],
+    ['s3', 'get-object', 'LOAD_FILES', 'STORAGE_UNAVAILABLE'],
+    ['chroma', 'query', 'LOAD_GROUND_TRUTH', 'KNOWLEDGE_BASE_UNAVAILABLE'],
+    ['gemini', 'generate', 'CV_EVALUATION', 'LLM_UNAVAILABLE'],
+    ['gemini', 'generate', 'PROJECT_EVALUATION', 'LLM_UNAVAILABLE'],
+    ['gemini', 'generate', 'FINAL_SYNTHESIS', 'LLM_UNAVAILABLE'],
+  ] as const)(
+    'maps an open %s circuit at %s to %s without retry',
+    (service, operation, stage, errorCode) => {
+      expect(
+        toPipelineError(new CircuitOpenError(service, operation), stage),
+      ).toMatchObject({ errorCode, failedStage: stage, retryable: false });
+    },
+  );
 });

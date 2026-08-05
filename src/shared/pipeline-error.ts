@@ -1,5 +1,6 @@
 import { HttpStatus } from '@nestjs/common';
 import { ZodError } from 'zod';
+import { CircuitOpenError } from './circuit-breaker.executor';
 import { getErrorMessage, isRetryableError } from './retry.utils';
 
 export const PIPELINE_ERROR_CODES = [
@@ -25,6 +26,15 @@ export const PIPELINE_STAGES = [
 ] as const;
 
 export type PipelineStage = (typeof PIPELINE_STAGES)[number];
+
+const CIRCUIT_OPEN_ERROR_CODES: Record<PipelineStage, PipelineErrorCode> = {
+  ENQUEUE: 'QUEUE_UNAVAILABLE',
+  LOAD_FILES: 'STORAGE_UNAVAILABLE',
+  LOAD_GROUND_TRUTH: 'KNOWLEDGE_BASE_UNAVAILABLE',
+  CV_EVALUATION: 'LLM_UNAVAILABLE',
+  PROJECT_EVALUATION: 'LLM_UNAVAILABLE',
+  FINAL_SYNTHESIS: 'LLM_UNAVAILABLE',
+};
 
 const PUBLIC_MESSAGES: Record<PipelineErrorCode, string> = {
   QUEUE_UNAVAILABLE: 'Evaluation queue is temporarily unavailable',
@@ -102,6 +112,15 @@ export function toPipelineError(
   error: unknown,
   failedStage: PipelineStage,
 ): PipelineError {
+  if (error instanceof CircuitOpenError) {
+    return new PipelineError({
+      errorCode: CIRCUIT_OPEN_ERROR_CODES[failedStage],
+      failedStage,
+      retryable: false,
+      cause: error,
+    });
+  }
+
   if (error instanceof PipelineError) {
     return error;
   }

@@ -3,7 +3,8 @@ import { Job, UnrecoverableError } from 'bullmq';
 import { EvaluationProcessor } from './evaluate.processor';
 import { EvaluateService } from './evaluate.service';
 import { PrismaService } from '../shared/prisma.service';
-import { PipelineError } from '../shared/pipeline-error';
+import { PipelineError, toPipelineError } from '../shared/pipeline-error';
+import { CircuitOpenError } from '../shared/circuit-breaker.executor';
 import type { EvaluationJobData } from '../shared/infrastructure.tokens';
 
 function createJob(attemptsMade = 0): Job<EvaluationJobData> {
@@ -136,6 +137,30 @@ describe('EvaluationProcessor', () => {
         error_code: 'LLM_INVALID_RESPONSE',
         failed_stage: 'FINAL_SYNTHESIS',
         error_message: 'AI evaluation service returned an invalid response',
+        retry_count: 1,
+        completed_at: expect.any(Date),
+      },
+    });
+  });
+
+  it('makes an open provider circuit terminal without another Bull attempt', async () => {
+    performEvaluation.mockRejectedValue(
+      toPipelineError(
+        new CircuitOpenError('gemini', 'CV_EVALUATION'),
+        'CV_EVALUATION',
+      ),
+    );
+
+    await expect(processor.process(createJob())).rejects.toBeInstanceOf(
+      UnrecoverableError,
+    );
+    expect(update).toHaveBeenNthCalledWith(2, {
+      where: { id: 42 },
+      data: {
+        status: 'failed',
+        error_code: 'LLM_UNAVAILABLE',
+        failed_stage: 'CV_EVALUATION',
+        error_message: 'AI evaluation service is temporarily unavailable',
         retry_count: 1,
         completed_at: expect.any(Date),
       },

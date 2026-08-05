@@ -22,12 +22,14 @@ export class ResultService {
       };
     }
 
-    // If status is failed, include error message
     if (evaluation.status === 'failed') {
       return {
         id: evaluation.id,
         status: evaluation.status,
+        error_code: evaluation.error_code,
+        failed_stage: evaluation.failed_stage,
         error_message: evaluation.error_message,
+        retry_count: evaluation.retry_count,
       };
     }
 

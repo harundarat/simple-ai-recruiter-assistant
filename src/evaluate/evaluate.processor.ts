@@ -1,16 +1,11 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Job } from 'bullmq';
+import { Job, UnrecoverableError } from 'bullmq';
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../shared/prisma.service';
 import { EvaluateService } from './evaluate.service';
-import { isRetryableError, getErrorMessage } from '../shared/retry.utils';
-
-interface EvaluationJobData {
-  evaluationId: number;
-  jobTitle: string;
-  cvId: number;
-  projectReportId: number;
-}
+import { getErrorMessage } from '../shared/retry.utils';
+import { EvaluationJobData } from '../shared/infrastructure.tokens';
+import { PipelineError } from '../shared/pipeline-error';
 
 @Processor('evaluation', { concurrency: 1 })
 @Injectable()
@@ -27,28 +22,22 @@ export class EvaluationProcessor extends WorkerHost {
   async process(job: Job<EvaluationJobData>): Promise<void> {
     const { evaluationId, jobTitle, cvId, projectReportId } = job.data;
 
-    this.logger.log(
-      `Processing evaluation ${evaluationId} for job: ${jobTitle}`,
-    );
+    await this.prismaService.evaluation.update({
+      where: { id: evaluationId },
+      data: {
+        status: 'processing',
+        started_at: new Date(),
+        completed_at: null,
+      },
+    });
 
     try {
-      // Update status to processing
-      await this.prismaService.evaluation.update({
-        where: { id: evaluationId },
-        data: {
-          status: 'processing',
-          started_at: new Date(),
-        },
-      });
-
-      // Execute the evaluation process
       const result = await this.evaluateService.performEvaluation(
         jobTitle,
         cvId,
         projectReportId,
       );
 
-      // Update with results
       await this.prismaService.evaluation.update({
         where: { id: evaluationId },
         data: {
@@ -58,52 +47,59 @@ export class EvaluationProcessor extends WorkerHost {
           project_score: result.project_score,
           project_feedback: result.project_feedback,
           overall_summary: result.overall_summary,
+          error_code: null,
+          failed_stage: null,
+          error_message: null,
           completed_at: new Date(),
         },
       });
-
       this.logger.log(`Evaluation ${evaluationId} completed successfully`);
-    } catch (error) {
-      const errorMessage = getErrorMessage(error);
-      const retryable = isRetryableError(error);
-
-      // Get current retry count
+    } catch (cause: unknown) {
+      const error =
+        cause instanceof PipelineError
+          ? cause
+          : new PipelineError({
+              errorCode: 'INTERNAL_ERROR',
+              failedStage: 'LOAD_FILES',
+              retryable: false,
+              cause,
+            });
       const currentEvaluation = await this.prismaService.evaluation.findUnique({
         where: { id: evaluationId },
         select: { retry_count: true },
       });
+      const retryCount = (currentEvaluation?.retry_count ?? 0) + 1;
+      const maxAttempts =
+        typeof job.opts.attempts === 'number' ? job.opts.attempts : 1;
+      const finalAttempt = job.attemptsMade + 1 >= maxAttempts;
+      const willRetry = error.retryable && !finalAttempt;
 
-      const newRetryCount = (currentEvaluation?.retry_count || 0) + 1;
-
-      // Log error with detailed context
       this.logger.error(
-        `Evaluation ${evaluationId} failed (attempt ${newRetryCount})`,
+        `Evaluation ${evaluationId} failed on processing attempt ${retryCount}`,
         {
-          error: errorMessage,
-          jobTitle,
-          retryable: retryable ? 'yes' : 'no (permanent error)',
-          retryCount: newRetryCount,
-          // Note: LLM decorator already did internal retries before throwing this error
-          note: retryable
-            ? 'Error is transient but max retries exhausted at LLM level'
-            : 'Error is permanent, will not be fixed by retrying',
+          errorCode: error.errorCode,
+          failedStage: error.failedStage,
+          retryable: error.retryable,
+          willRetry,
+          cause: getErrorMessage(error.cause ?? cause),
         },
       );
 
-      // Update database with error details
       await this.prismaService.evaluation.update({
         where: { id: evaluationId },
         data: {
-          status: 'failed',
-          error_message: errorMessage,
-          retry_count: newRetryCount,
-          completed_at: new Date(),
+          status: willRetry ? 'queued' : 'failed',
+          error_code: error.errorCode,
+          failed_stage: error.failedStage,
+          error_message: error.publicMessage,
+          retry_count: retryCount,
+          completed_at: willRetry ? null : new Date(),
         },
       });
 
-      // Re-throw error
-      // Note: BullMQ can handle retries at the job level if configured,
-      // but our @Retry decorator already handled LLM-level retries
+      if (!error.retryable) {
+        throw new UnrecoverableError(error.publicMessage);
+      }
       throw error;
     }
   }

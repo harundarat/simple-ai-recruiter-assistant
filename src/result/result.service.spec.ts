@@ -18,6 +18,8 @@ const completedEvaluation = {
   project_score: 4.5,
   project_feedback: 'Well built',
   overall_summary: 'Recommended',
+  error_code: null,
+  failed_stage: null,
   error_message: null,
   retry_count: 0,
   started_at: new Date('2026-01-01T00:00:00Z'),
@@ -52,13 +54,18 @@ describe('ResultService', () => {
     const { service } = createService({
       ...completedEvaluation,
       status: 'failed',
+      error_code: 'LLM_UNAVAILABLE',
+      failed_stage: 'CV_EVALUATION',
       error_message: 'Gemini unavailable',
     });
 
     await expect(service.getEvaluationResult(42)).resolves.toEqual({
       id: 42,
       status: 'failed',
+      error_code: 'LLM_UNAVAILABLE',
+      failed_stage: 'CV_EVALUATION',
       error_message: 'Gemini unavailable',
+      retry_count: 0,
     });
   });
 

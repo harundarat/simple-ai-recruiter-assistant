@@ -43,6 +43,7 @@ import {
   PipelineStage,
   toPipelineError,
 } from '../shared/pipeline-error';
+import { CircuitBreakerExecutor } from '../shared/circuit-breaker.executor';
 
 @Injectable()
 export class EvaluateService {
@@ -57,6 +58,7 @@ export class EvaluateService {
     @Inject(EVALUATION_QUEUE)
     private readonly evaluationQueue: EvaluationQueue,
     private readonly retryExecutor: RetryExecutor,
+    private readonly circuitBreakerExecutor: CircuitBreakerExecutor,
   ) {}
 
   async startEvaluation(
@@ -94,25 +96,27 @@ export class EvaluateService {
     const jobId = `evaluation-${evaluation.id}`;
 
     try {
-      await this.retryExecutor.execute(
-        'ENQUEUE',
-        () =>
-          this.evaluationQueue.enqueue(
-            { evaluationId: evaluation.id, jobTitle, cvId, projectReportId },
-            jobId,
-          ),
-        {
-          maxAttempts: 2,
-          initialDelayMs:
-            this.configService.get<number>('ENQUEUE_RETRY_DELAY_MS') ?? 250,
-          maxDelayMs: 1_000,
-          backoffMultiplier: 2,
-          timeoutMs:
-            this.configService.get<number>('ENQUEUE_TIMEOUT_MS') ?? 5_000,
-          jitterRatio:
-            this.configService.get<number>('RETRY_JITTER_RATIO') ?? 0.2,
-          shouldRetry: () => true,
-        },
+      await this.circuitBreakerExecutor.execute('redis', 'ENQUEUE', () =>
+        this.retryExecutor.execute(
+          'ENQUEUE',
+          () =>
+            this.evaluationQueue.enqueue(
+              { evaluationId: evaluation.id, jobTitle, cvId, projectReportId },
+              jobId,
+            ),
+          {
+            maxAttempts: 2,
+            initialDelayMs:
+              this.configService.get<number>('ENQUEUE_RETRY_DELAY_MS') ?? 250,
+            maxDelayMs: 1_000,
+            backoffMultiplier: 2,
+            timeoutMs:
+              this.configService.get<number>('ENQUEUE_TIMEOUT_MS') ?? 5_000,
+            jitterRatio:
+              this.configService.get<number>('RETRY_JITTER_RATIO') ?? 0.2,
+            shouldRetry: () => true,
+          },
+        ),
       );
     } catch (cause: unknown) {
       const error = toPipelineError(cause, 'ENQUEUE');

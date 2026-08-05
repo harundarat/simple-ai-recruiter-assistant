@@ -11,6 +11,18 @@ import { LLMService } from '../shared/llm.service';
 import { ChromaService } from '../shared/chroma.service';
 import { RetryExecutor } from '../shared/retry.executor';
 import { PipelineError } from '../shared/pipeline-error';
+import { CircuitBreakerExecutor } from '../shared/circuit-breaker.executor';
+
+function createCircuitBreaker(failureThreshold = 3) {
+  const values: Record<string, unknown> = {
+    CIRCUIT_BREAKER_ENABLED: true,
+    CIRCUIT_BREAKER_FAILURE_THRESHOLD: failureThreshold,
+    CIRCUIT_BREAKER_RESET_TIMEOUT_MS: 30_000,
+  };
+  return new CircuitBreakerExecutor({
+    get: jest.fn((name: string) => values[name]),
+  } as unknown as ConfigService);
+}
 
 describe('EvaluateService.startEvaluation', () => {
   const cvFindUnique = jest.fn<() => Promise<unknown>>();
@@ -28,15 +40,7 @@ describe('EvaluateService.startEvaluation', () => {
     },
   } as unknown as PrismaService;
 
-  const service = new EvaluateService(
-    prismaService,
-    {} as S3Service,
-    {} as LLMService,
-    {} as ChromaService,
-    { get: jest.fn(() => 0) } as unknown as ConfigService,
-    { enqueue: queueAdd },
-    new RetryExecutor(),
-  );
+  let service: EvaluateService;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -45,6 +49,16 @@ describe('EvaluateService.startEvaluation', () => {
     evaluationCreate.mockResolvedValue({ id: 42 });
     evaluationUpdate.mockResolvedValue({ id: 42, status: 'failed' });
     queueAdd.mockResolvedValue(undefined);
+    service = new EvaluateService(
+      prismaService,
+      {} as S3Service,
+      {} as LLMService,
+      {} as ChromaService,
+      { get: jest.fn(() => 0) } as unknown as ConfigService,
+      { enqueue: queueAdd },
+      new RetryExecutor(),
+      createCircuitBreaker(),
+    );
   });
 
   it('creates and enqueues an evaluation', async () => {
@@ -106,6 +120,47 @@ describe('EvaluateService.startEvaluation', () => {
       },
     });
     expect(queueAdd).toHaveBeenCalledTimes(2);
+  });
+
+  it('counts each exhausted enqueue retry sequence once and fails fast when open', async () => {
+    queueAdd.mockRejectedValue(
+      Object.assign(new Error('Redis unavailable'), { status: 503 }),
+    );
+
+    for (let request = 0; request < 3; request += 1) {
+      await expect(
+        service.startEvaluation('Backend Developer', 1, 2),
+      ).rejects.toThrow(ServiceUnavailableException);
+    }
+    let fourthError: unknown;
+    try {
+      await service.startEvaluation('Backend Developer', 1, 2);
+    } catch (error: unknown) {
+      fourthError = error;
+    }
+
+    expect(fourthError).toBeInstanceOf(ServiceUnavailableException);
+    if (!(fourthError instanceof ServiceUnavailableException)) {
+      throw new Error('Expected the fourth enqueue to return HTTP 503');
+    }
+    expect(fourthError.getStatus()).toBe(503);
+    expect(fourthError.getResponse()).toEqual({
+      error_code: 'QUEUE_UNAVAILABLE',
+      failed_stage: 'ENQUEUE',
+      message: 'Evaluation queue is temporarily unavailable',
+    });
+    expect(queueAdd).toHaveBeenCalledTimes(6);
+    expect(evaluationUpdate).toHaveBeenCalledTimes(4);
+    expect(evaluationUpdate).toHaveBeenLastCalledWith({
+      where: { id: 42 },
+      data: {
+        status: 'failed',
+        error_code: 'QUEUE_UNAVAILABLE',
+        failed_stage: 'ENQUEUE',
+        error_message: 'Evaluation queue is temporarily unavailable',
+        completed_at: expect.any(Date),
+      },
+    });
   });
 });
 
@@ -185,6 +240,7 @@ describe('EvaluateService pipeline', () => {
     } as unknown as ConfigService,
     { enqueue: jest.fn(() => Promise.resolve()) },
     new RetryExecutor(),
+    createCircuitBreaker(),
   );
 
   beforeEach(() => {

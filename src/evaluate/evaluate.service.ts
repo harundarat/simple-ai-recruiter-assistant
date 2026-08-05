@@ -12,6 +12,7 @@ import { FINAL_SYNTHESIS_SYSTEM_PROMPT } from './prompt/final-synthesis.prompt';
 import { CVEvaluationResult } from './dto/cv-evaluation-result.dto';
 import { ProjectEvaluationResult } from './dto/project-evaluation-result.dto';
 import { EvaluationStatus } from '../generated/prisma/enums';
+import { getErrorMessage } from '../shared/retry.utils';
 
 @Injectable()
 export class EvaluateService {
@@ -170,20 +171,21 @@ Please analyze the attached CV PDF and evaluate the candidate based on the job d
         throw new Error('LLM response did not contain text output');
       }
 
-      const result = JSON.parse(resultText);
+      const result = JSON.parse(resultText) as CVEvaluationResult;
 
       this.logger.log('CV evaluation completed successfully');
       return result;
-    } catch (error) {
+    } catch (error: unknown) {
+      const errorMessage = getErrorMessage(error);
       this.logger.error('CV evaluation failed', {
-        error: error.message || error,
+        error: errorMessage,
         stage: 'CV Evaluation (Stage 1/3)',
       });
 
       // Re-throw with more context
-      throw new Error(
-        `Failed to evaluate CV: ${error.message || 'Unknown error'}`,
-      );
+      throw new Error(`Failed to evaluate CV: ${errorMessage}`, {
+        cause: error,
+      });
     }
   }
 
@@ -222,20 +224,21 @@ Please analyze the attached Project Report PDF and evaluate the candidate's impl
         throw new Error('LLM response did not contain text output');
       }
 
-      const result = JSON.parse(resultText);
+      const result = JSON.parse(resultText) as ProjectEvaluationResult;
 
       this.logger.log('Project Report evaluation completed successfully');
       return result;
-    } catch (error) {
+    } catch (error: unknown) {
+      const errorMessage = getErrorMessage(error);
       this.logger.error('Project Report evaluation failed', {
-        error: error.message || error,
+        error: errorMessage,
         stage: 'Project Report Evaluation (Stage 2/3)',
       });
 
       // Re-throw with more context
-      throw new Error(
-        `Failed to evaluate Project Report: ${error.message || 'Unknown error'}`,
-      );
+      throw new Error(`Failed to evaluate Project Report: ${errorMessage}`, {
+        cause: error,
+      });
     }
   }
 
@@ -288,20 +291,21 @@ Based on the above evaluations, provide a comprehensive final synthesis that int
         throw new Error('LLM response did not contain text output');
       }
 
-      const result = JSON.parse(resultText);
+      const result = JSON.parse(resultText) as { overall_summary: string };
 
       this.logger.log('Final synthesis completed successfully');
       return result;
-    } catch (error) {
+    } catch (error: unknown) {
+      const errorMessage = getErrorMessage(error);
       this.logger.error('Final synthesis failed', {
-        error: error.message || error,
+        error: errorMessage,
         stage: 'Final Synthesis (Stage 3/3)',
       });
 
       // Re-throw with more context
-      throw new Error(
-        `Failed to synthesize final result: ${error.message || 'Unknown error'}`,
-      );
+      throw new Error(`Failed to synthesize final result: ${errorMessage}`, {
+        cause: error,
+      });
     }
   }
 }

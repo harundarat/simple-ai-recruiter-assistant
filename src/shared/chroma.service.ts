@@ -12,6 +12,7 @@ import { RetryExecutor } from './retry.executor';
 import type { RetryOptions } from './retry.executor';
 import { GroundTruthNotFoundError } from './pipeline-error';
 import { KnowledgeBase } from './infrastructure.tokens';
+import { CircuitBreakerExecutor } from './circuit-breaker.executor';
 
 export class GeminiEmbeddingFunction implements EmbeddingFunction {
   readonly name = 'google-gemini';
@@ -20,13 +21,16 @@ export class GeminiEmbeddingFunction implements EmbeddingFunction {
     private readonly client: GeminiClient,
     private readonly retryExecutor: RetryExecutor,
     private readonly retryOptions: RetryOptions,
+    private readonly circuitBreakerExecutor: CircuitBreakerExecutor,
   ) {}
 
   generate(texts: string[]): Promise<number[][]> {
-    return this.retryExecutor.execute(
-      'EMBEDDING',
-      () => this.client.embed(texts),
-      this.retryOptions,
+    return this.circuitBreakerExecutor.execute('gemini', 'EMBEDDING', () =>
+      this.retryExecutor.execute(
+        'EMBEDDING',
+        () => this.client.embed(texts),
+        this.retryOptions,
+      ),
     );
   }
 
@@ -51,6 +55,7 @@ export class ChromaService implements KnowledgeBase {
     private readonly retryExecutor: RetryExecutor,
     @Inject(GEMINI_RETRY_OPTIONS)
     private readonly geminiRetryOptions: RetryOptions,
+    private readonly circuitBreakerExecutor: CircuitBreakerExecutor,
   ) {
     this.client = new ChromaClient({
       host: configService.getOrThrow<string>('CHROMA_HOST'),
@@ -69,6 +74,7 @@ export class ChromaService implements KnowledgeBase {
         this.geminiClient,
         this.retryExecutor,
         this.geminiRetryOptions,
+        this.circuitBreakerExecutor,
       ),
     });
 

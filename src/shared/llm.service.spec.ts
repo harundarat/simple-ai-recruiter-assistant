@@ -2,6 +2,32 @@ import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { LLMService } from './llm.service';
 import type { GeminiClient } from './gemini-client';
 import { RetryExecutor } from './retry.executor';
+import { ConfigService } from '@nestjs/config';
+import {
+  CircuitBreakerExecutor,
+  CircuitOpenError,
+} from './circuit-breaker.executor';
+import { GeminiEmbeddingFunction } from './chroma.service';
+
+const retryOptions = {
+  maxAttempts: 2,
+  initialDelayMs: 0,
+  maxDelayMs: 0,
+  backoffMultiplier: 2,
+  timeoutMs: 1_000,
+  jitterRatio: 0,
+};
+
+function createCircuitBreaker(failureThreshold = 3, resetTimeoutMs = 30_000) {
+  const values: Record<string, unknown> = {
+    CIRCUIT_BREAKER_ENABLED: true,
+    CIRCUIT_BREAKER_FAILURE_THRESHOLD: failureThreshold,
+    CIRCUIT_BREAKER_RESET_TIMEOUT_MS: resetTimeoutMs,
+  };
+  return new CircuitBreakerExecutor({
+    get: jest.fn((name: string) => values[name]),
+  } as unknown as ConfigService);
+}
 
 describe('LLMService', () => {
   const generateContent = jest.fn<GeminiClient['generateContent']>();
@@ -9,18 +35,19 @@ describe('LLMService', () => {
     generateContent,
     embed: jest.fn<GeminiClient['embed']>(),
   } satisfies GeminiClient;
-  const service = new LLMService(client, new RetryExecutor(), {
-    maxAttempts: 2,
-    initialDelayMs: 0,
-    maxDelayMs: 0,
-    backoffMultiplier: 2,
-    timeoutMs: 1_000,
-    jitterRatio: 0,
-  });
+  let circuitBreaker: CircuitBreakerExecutor;
+  let service: LLMService;
 
   beforeEach(() => {
     jest.clearAllMocks();
     generateContent.mockResolvedValue({ text: 'generated' });
+    circuitBreaker = createCircuitBreaker();
+    service = new LLMService(
+      client,
+      new RetryExecutor(),
+      retryOptions,
+      circuitBreaker,
+    );
   });
 
   it('sends PDFs with an explicit operation to Flash Lite', async () => {
@@ -79,5 +106,94 @@ describe('LLMService', () => {
       service.callGeminiFlash('FINAL_SYNTHESIS', { contents: 'prompt' }),
     ).resolves.toEqual({ text: 'recovered' });
     expect(generateContent).toHaveBeenCalledTimes(2);
+  });
+
+  it('counts an exhausted two-attempt retry sequence as one breaker failure', async () => {
+    generateContent.mockRejectedValue(
+      Object.assign(new Error('Gemini unavailable'), { status: 503 }),
+    );
+
+    for (let call = 0; call < 3; call += 1) {
+      await expect(
+        service.callGeminiFlash('FINAL_SYNTHESIS', { contents: 'prompt' }),
+      ).rejects.toThrow('Gemini unavailable');
+    }
+    await expect(
+      service.callGeminiFlash('FINAL_SYNTHESIS', { contents: 'prompt' }),
+    ).rejects.toBeInstanceOf(CircuitOpenError);
+    expect(generateContent).toHaveBeenCalledTimes(6);
+  });
+
+  it('shares the Gemini circuit between generation and embedding', async () => {
+    const failure = Object.assign(new Error('Gemini unavailable'), {
+      status: 503,
+    });
+    generateContent.mockRejectedValue(failure);
+    const embed = jest.fn<GeminiClient['embed']>().mockResolvedValue([[0.1]]);
+    const embedding = new GeminiEmbeddingFunction(
+      { ...client, embed },
+      new RetryExecutor(),
+      { ...retryOptions, maxAttempts: 1 },
+      circuitBreaker,
+    );
+    service = new LLMService(
+      client,
+      new RetryExecutor(),
+      { ...retryOptions, maxAttempts: 1 },
+      circuitBreaker,
+    );
+
+    for (let call = 0; call < 3; call += 1) {
+      await expect(
+        service.callGeminiFlash('FINAL_SYNTHESIS', { contents: 'prompt' }),
+      ).rejects.toThrow('Gemini unavailable');
+    }
+
+    await expect(embedding.generate(['role'])).rejects.toBeInstanceOf(
+      CircuitOpenError,
+    );
+    expect(embed).not.toHaveBeenCalled();
+  });
+
+  it('recovers through one half-open Gemini probe after cooldown', async () => {
+    jest.useFakeTimers();
+    try {
+      circuitBreaker = createCircuitBreaker(1);
+      service = new LLMService(
+        client,
+        new RetryExecutor(),
+        { ...retryOptions, maxAttempts: 1 },
+        circuitBreaker,
+      );
+      generateContent.mockRejectedValueOnce(
+        Object.assign(new Error('Gemini unavailable'), { status: 503 }),
+      );
+
+      await expect(
+        service.callGeminiFlash('FINAL_SYNTHESIS', { contents: 'prompt' }),
+      ).rejects.toThrow('Gemini unavailable');
+      await expect(
+        service.callGeminiFlash('FINAL_SYNTHESIS', { contents: 'prompt' }),
+      ).rejects.toBeInstanceOf(CircuitOpenError);
+
+      jest.advanceTimersByTime(30_000);
+      generateContent.mockResolvedValue({ text: 'recovered' });
+      await expect(
+        service.callGeminiFlash('FINAL_SYNTHESIS', { contents: 'prompt' }),
+      ).resolves.toEqual({ text: 'recovered' });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('treats SDK successes as healthy even when later parsing rejects the text', async () => {
+    generateContent.mockResolvedValue({ text: 'not valid evaluation json' });
+
+    for (let call = 0; call < 4; call += 1) {
+      await expect(
+        service.callGeminiFlash('FINAL_SYNTHESIS', { contents: 'prompt' }),
+      ).resolves.toEqual({ text: 'not valid evaluation json' });
+    }
+    expect(generateContent).toHaveBeenCalledTimes(4);
   });
 });

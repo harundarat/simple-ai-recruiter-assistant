@@ -4,6 +4,7 @@ import { ChromaClient, Collection } from 'chromadb';
 import { ChromaService, GeminiEmbeddingFunction } from './chroma.service';
 import type { GeminiClient } from './gemini-client';
 import { RetryExecutor } from './retry.executor';
+import { CircuitBreakerExecutor } from './circuit-breaker.executor';
 
 jest.mock('chromadb');
 
@@ -49,6 +50,11 @@ describe('ChromaService', () => {
       geminiClient,
       new RetryExecutor(),
       retryOptions,
+      new CircuitBreakerExecutor({
+        get: jest.fn((name: string) =>
+          name === 'CIRCUIT_BREAKER_ENABLED' ? true : undefined,
+        ),
+      } as unknown as ConfigService),
     );
   });
 
@@ -57,6 +63,11 @@ describe('ChromaService', () => {
       geminiClient,
       new RetryExecutor(),
       retryOptions,
+      new CircuitBreakerExecutor({
+        get: jest.fn((name: string) =>
+          name === 'CIRCUIT_BREAKER_ENABLED' ? true : undefined,
+        ),
+      } as unknown as ConfigService),
     );
 
     await expect(embeddingFunction.generate(['Backend role'])).resolves.toEqual(

@@ -8,6 +8,7 @@ import {
 import type { GeminiClient } from './gemini-client';
 import { RetryExecutor } from './retry.executor';
 import type { RetryOptions } from './retry.executor';
+import { CircuitBreakerExecutor } from './circuit-breaker.executor';
 
 type LLMCallParameters = Omit<GenerateContentParameters, 'model'>;
 
@@ -20,6 +21,7 @@ export class LLMService {
     private readonly retryExecutor: RetryExecutor,
     @Inject(GEMINI_RETRY_OPTIONS)
     private readonly retryOptions: RetryOptions,
+    private readonly circuitBreakerExecutor: CircuitBreakerExecutor,
   ) {}
 
   async callGeminiFlashLiteWithPDF(
@@ -35,28 +37,30 @@ export class LLMService {
       `Calling Gemini Flash Lite for ${operation} (PDF size: ${pdfBuffer.length} bytes)`,
     );
 
-    return this.retryExecutor.execute(
-      operation,
-      () =>
-        this.gemini.generateContent(operation, {
-          model: 'gemini-2.5-flash-lite',
-          contents: [
-            {
-              role: 'user',
-              parts: [
-                {
-                  inlineData: {
-                    mimeType: 'application/pdf',
-                    data: pdfBuffer.toString('base64'),
+    return this.circuitBreakerExecutor.execute('gemini', operation, () =>
+      this.retryExecutor.execute(
+        operation,
+        () =>
+          this.gemini.generateContent(operation, {
+            model: 'gemini-2.5-flash-lite',
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  {
+                    inlineData: {
+                      mimeType: 'application/pdf',
+                      data: pdfBuffer.toString('base64'),
+                    },
                   },
-                },
-                { text: prompt },
-              ],
-            },
-          ],
-          config,
-        }),
-      this.retryOptions,
+                  { text: prompt },
+                ],
+              },
+            ],
+            config,
+          }),
+        this.retryOptions,
+      ),
     );
   }
 
@@ -65,14 +69,16 @@ export class LLMService {
     params: LLMCallParameters,
   ) {
     this.logger.debug(`Calling Gemini Flash for ${operation}`);
-    return this.retryExecutor.execute(
-      operation,
-      () =>
-        this.gemini.generateContent(operation, {
-          model: 'gemini-2.5-flash',
-          ...params,
-        }),
-      this.retryOptions,
+    return this.circuitBreakerExecutor.execute('gemini', operation, () =>
+      this.retryExecutor.execute(
+        operation,
+        () =>
+          this.gemini.generateContent(operation, {
+            model: 'gemini-2.5-flash',
+            ...params,
+          }),
+        this.retryOptions,
+      ),
     );
   }
 }

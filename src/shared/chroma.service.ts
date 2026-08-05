@@ -31,30 +31,40 @@ export class ChromaService {
     }
   }
 
-  async getJobDescription(jobTitle: string) {
+  async getJobDescription(
+    jobTitle: string,
+  ): Promise<{ document: string; role: string }> {
     const collection = await this.getCollection('ground_truth');
     const results = await collection.query({
       queryTexts: [jobTitle],
       nResults: 1,
+      include: ['documents', 'metadatas'],
       where: {
         type: 'job_description',
       },
     });
 
-    if (!results.documents[0] || !results.documents[0][0]) {
+    const document = results.documents[0]?.[0];
+    const role = results.metadatas[0]?.[0]?.role;
+
+    if (!document) {
       throw new Error('Job description not found');
     }
 
-    return results.documents[0][0];
+    if (typeof role !== 'string' || role.length === 0) {
+      throw new Error('Job description is missing role metadata');
+    }
+
+    return { document, role };
   }
 
-  async getCaseStudyBrief() {
+  async getCaseStudyBrief(role: string): Promise<string> {
     const collection = await this.getCollection('ground_truth');
     const results = await collection.query({
       queryTexts: ['case study brief project requirements'],
       nResults: 1,
       where: {
-        type: 'case_study_brief',
+        $and: [{ type: 'case_study_brief' }, { role }],
       },
     });
 
@@ -65,7 +75,10 @@ export class ChromaService {
     return results.documents[0][0];
   }
 
-  async getScoringRubric(rubricType: 'cv' | 'project') {
+  async getScoringRubric(
+    rubricType: 'cv' | 'project',
+    role: string,
+  ): Promise<string> {
     const collection = await this.getCollection('ground_truth');
     const results = await collection.query({
       queryTexts: [
@@ -75,7 +88,7 @@ export class ChromaService {
       ],
       nResults: 1,
       where: {
-        $and: [{ type: 'rubric' }, { for: rubricType }],
+        $and: [{ type: 'rubric' }, { for: rubricType }, { role }],
       },
     });
 

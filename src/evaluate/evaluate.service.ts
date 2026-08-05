@@ -131,19 +131,19 @@ export class EvaluateService {
       this.s3Service.getFile(bucketName, projectReport.hosted_name),
     ]);
 
-    // get ground truth documents from vector DB
-    const [jobDescription, caseStudyBrief, cvRubric, projectRubric] =
-      await Promise.all([
-        this.chromaService.getJobDescription(jobTitle),
-        this.chromaService.getCaseStudyBrief(),
-        this.chromaService.getScoringRubric('cv'),
-        this.chromaService.getScoringRubric('project'),
-      ]);
+    // Resolve the role from the matched job description, then keep every
+    // supporting document scoped to that same role.
+    const jobDescription = await this.chromaService.getJobDescription(jobTitle);
+    const [caseStudyBrief, cvRubric, projectRubric] = await Promise.all([
+      this.chromaService.getCaseStudyBrief(jobDescription.role),
+      this.chromaService.getScoringRubric('cv', jobDescription.role),
+      this.chromaService.getScoringRubric('project', jobDescription.role),
+    ]);
 
     // Evaluate CV
     const cvEvaluation = await this.evaluateCV(
       cvBuffer,
-      jobDescription,
+      jobDescription.document,
       cvRubric,
     );
 

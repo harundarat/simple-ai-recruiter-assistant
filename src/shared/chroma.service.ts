@@ -1,23 +1,34 @@
 import { Injectable } from '@nestjs/common';
-import { ChromaClient } from 'chromadb';
+import { ChromaClient, Collection } from 'chromadb';
 import { GoogleGeminiEmbeddingFunction } from '@chroma-core/google-gemini';
 import { ConfigService } from '@nestjs/config';
 
 @Injectable()
 export class ChromaService {
-  constructor(private readonly configService: ConfigService) { }
+  private readonly client: ChromaClient;
+  private collectionPromise?: Promise<Collection>;
 
-  async getCollection(collectionName: string) {
-    const client = new ChromaClient();
+  constructor(private readonly configService: ConfigService) {
+    this.client = new ChromaClient({
+      host: configService.getOrThrow<string>('CHROMA_HOST'),
+      port: configService.getOrThrow<number>('CHROMA_PORT'),
+    });
+  }
 
-    const collection = await client.getOrCreateCollection({
+  async getCollection(collectionName: string): Promise<Collection> {
+    this.collectionPromise ??= this.client.getOrCreateCollection({
       name: collectionName,
       embeddingFunction: new GoogleGeminiEmbeddingFunction({
         apiKey: this.configService.getOrThrow<string>('GOOGLE_GEMINI_API_KEY'),
       }),
     });
 
-    return collection;
+    try {
+      return await this.collectionPromise;
+    } catch (error) {
+      this.collectionPromise = undefined;
+      throw error;
+    }
   }
 
   async getJobDescription(jobTitle: string) {
@@ -64,10 +75,7 @@ export class ChromaService {
       ],
       nResults: 1,
       where: {
-        $and: [
-          { type: 'rubric' },
-          { for: rubricType },
-        ],
+        $and: [{ type: 'rubric' }, { for: rubricType }],
       },
     });
 

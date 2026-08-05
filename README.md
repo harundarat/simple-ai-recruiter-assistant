@@ -35,7 +35,7 @@ This system automates candidate evaluation through a sophisticated AI pipeline t
 - **Asynchronous Processing** using BullMQ job queue for long-running AI evaluations
 - **RAG (Retrieval-Augmented Generation)** with ChromaDB vector database for semantic search
 - **Multi-stage LLM Pipeline** with strategic model selection for cost efficiency
-- **Robust Error Handling** with automatic retry mechanism (exponential backoff) and smart error classification
+- **Robust Error Handling** with bounded retries, smart error classification, and per-service circuit breakers
 - **PDF Processing** with multimodal AI for direct document analysis
 
 ---
@@ -189,6 +189,7 @@ simple-ai-recruiter-assistant/
 │   │   ├── gemini-client.ts      # Injectable production Gemini adapter
 │   │   ├── llm.service.ts        # Operation-specific Gemini calls
 │   │   ├── chroma.service.ts     # ChromaDB vector search
+│   │   ├── circuit-breaker.executor.ts # Per-service circuit breaker registry
 │   │   ├── retry.executor.ts     # Injectable bounded retry executor
 │   │   ├── pipeline-error.ts     # Structured pipeline error mapping
 │   │   ├── retry.utils.ts        # Retry utility functions
@@ -277,7 +278,16 @@ S3_FORCE_PATH_STYLE="true"
 # Application
 PORT="3000"
 NODE_ENV="development"
+
+# External service circuit breakers
+CIRCUIT_BREAKER_ENABLED="true"
+CIRCUIT_BREAKER_FAILURE_THRESHOLD="3"
+CIRCUIT_BREAKER_RESET_TIMEOUT_MS="30000"
 ```
+
+Circuit breaker settings are read at startup. `CIRCUIT_BREAKER_ENABLED=false`
+bypasses circuit state while retaining the existing retry and timeout behavior.
+The failure threshold and reset timeout must be positive integers.
 
 ### 2. Run database migrations
 
@@ -781,6 +791,42 @@ await retryExecutor.execute(operation, callGemini, {
 });
 ```
 
+External calls are also protected by a process-local circuit breaker outside
+their retry sequence:
+
+```text
+BullMQ job attempt
+    ↓
+Circuit breaker
+    ↓
+Local retry + timeout
+    ↓
+External service
+```
+
+The protected services have independent state:
+
+- `gemini`: generation and embedding operations share one circuit.
+- `chroma`: collection lookup and vector queries; Gemini embeddings are
+  generated before entering the Chroma query circuit.
+- `s3`: every AWS SDK command, including `multer-s3` upload, read, delete, and
+  cleanup. The initialize middleware sits outside AWS SDK internal retries.
+- `redis`: only the application enqueue gateway. BullMQ worker polling,
+  heartbeat, reconnect behavior, and PostgreSQL are not protected.
+
+After three consecutive transient operation failures, the relevant circuit
+opens. Calls then fail fast for 30 seconds. The next call becomes the single
+half-open probe: success closes the circuit, while a transient failure reopens
+it. Permanent errors and domain validation failures do not increment the
+breaker. Because each breaker wraps the whole retry sequence, two exhausted
+local attempts count as one circuit failure.
+
+The operation that reaches the threshold still returns its original service
+error and follows the normal BullMQ retry rules. A later job that encounters an
+already-open circuit is terminal (`retryable: false`) so BullMQ does not consume
+all attempts during the cooldown. After cooldown, a new request or job supplies
+the probe; previously failed jobs are not restarted automatically.
+
 **Processor-level error handling:**
 
 ```typescript
@@ -802,6 +848,7 @@ try {
 - Error mapping: `src/shared/pipeline-error.ts`
 - Processor error handling: `src/evaluate/evaluate.processor.ts`
 - LLM service: `src/shared/llm.service.ts`
+- Circuit breaker registry: `src/shared/circuit-breaker.executor.ts`
 
 ### 5. RAG (Retrieval-Augmented Generation)
 
@@ -983,6 +1030,7 @@ const jobDescription =
 - ✅ **File upload validation** (dual-layer: Multer + validation pipes)
 - ✅ **Automatic retry with exponential backoff** for LLM API calls
 - ✅ **Smart error classification** (retryable vs permanent errors)
+- ✅ Per-service circuit breakers for Gemini, Chroma, S3, and Redis enqueue
 - ✅ Structured public errors with error code and failed stage
 - ✅ Internal causes logged without exposing them through the database/API
 - ✅ Retry count tracks failed worker processing attempts
@@ -1029,14 +1077,29 @@ Gemini attempt 1: Rate limit (429) → bounded wait
 Gemini attempt 2: still unavailable → BullMQ schedules the next job attempt
 ```
 
-**Implementation details:** `src/shared/retry.executor.ts`, `src/shared/pipeline-error.ts`, and `src/evaluate/evaluate.processor.ts`
+**Circuit breaker behavior:**
+
+| Setting | Default | Behavior |
+| --- | ---: | --- |
+| `CIRCUIT_BREAKER_ENABLED` | `true` | Set to `false` to bypass breakers only |
+| `CIRCUIT_BREAKER_FAILURE_THRESHOLD` | `3` | Consecutive transient operation failures before open |
+| `CIRCUIT_BREAKER_RESET_TIMEOUT_MS` | `30000` | Cooldown before one half-open probe |
+
+The public API remains service-oriented. An open circuit maps to
+`QUEUE_UNAVAILABLE`, `STORAGE_UNAVAILABLE`, `KNOWLEDGE_BASE_UNAVAILABLE`, or
+`LLM_UNAVAILABLE` according to the pipeline stage. Circuit state, provider, and
+operation are retained only in internal errors and logs; they are not added to
+the response schema or database schema.
+
+**Implementation details:** `src/shared/retry.executor.ts`, `src/shared/circuit-breaker.executor.ts`, `src/shared/pipeline-error.ts`, and `src/evaluate/evaluate.processor.ts`
 
 **Not implemented (future work):**
 
 - ❌ Partial result storage (if one stage succeeds but next fails)
-- ❌ Circuit breaker pattern
 
-**Reasoning:** Retry mechanism addresses case study requirements for "handling API failures, timeouts, rate limits" and implements exponential backoff as specified. Demonstrates production-ready resilience patterns.
+**Reasoning:** Bounded retries handle brief failures within one operation, while
+the circuit breakers stop repeated calls to an unhealthy dependency. BullMQ
+continues to own whole-job retries and persisted worker state.
 
 ---
 
@@ -1100,7 +1163,7 @@ Gemini attempt 2: still unavailable → BullMQ schedules the next job attempt
 
 ### Current Testing Status
 
-The automated suite contains **71 unit tests** and **10 E2E scenarios**. Unit tests isolate services. E2E starts real PostgreSQL, Redis/BullMQ, ChromaDB, and MinIO while replacing only Gemini generation/embeddings with a deterministic fake. It applies migrations, seeds Chroma from literal documents, runs serially, and always removes the isolated Compose project and volumes through a cleanup trap.
+The automated suite contains **118 unit tests** and **10 E2E scenarios**. Unit tests isolate services. E2E starts real PostgreSQL, Redis/BullMQ, ChromaDB, and MinIO while replacing only Gemini generation/embeddings with a deterministic fake. It applies migrations, seeds Chroma from literal documents, runs serially, and always removes the isolated Compose project and volumes through a cleanup trap.
 
 ```bash
 # Unit tests
@@ -1217,7 +1280,7 @@ Use `pnpm ts-node seed/test-chromadb.ts` after production-style PDF seeding to i
 
 2. **Advanced Error Handling**
    - ✅ ~~Exponential backoff for LLM API retries~~ **(IMPLEMENTED)**
-   - Circuit breaker for external services
+   - [x] Circuit breaker for external services **(IMPLEMENTED)**
    - Partial result storage (checkpoint evaluation progress)
    - Advanced rate limit handling with adaptive backoff
 

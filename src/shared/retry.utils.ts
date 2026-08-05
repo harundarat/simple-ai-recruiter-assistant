@@ -27,6 +27,11 @@ function getStatusCode(error: unknown): number | undefined {
     return response.status;
   }
 
+  const metadata = error.$metadata;
+  if (isRecord(metadata) && typeof metadata.httpStatusCode === 'number') {
+    return metadata.httpStatusCode;
+  }
+
   return undefined;
 }
 

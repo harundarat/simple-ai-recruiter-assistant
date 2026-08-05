@@ -22,6 +22,20 @@ describe('retry utilities', () => {
     },
   );
 
+  it.each([500, 502, 503, 504])(
+    'classifies AWS SDK HTTP %i metadata as retryable',
+    (httpStatusCode) => {
+      expect(isRetryableError({ $metadata: { httpStatusCode } })).toBe(true);
+    },
+  );
+
+  it.each([400, 401, 403, 404, 405, 422])(
+    'classifies AWS SDK HTTP %i metadata as permanent',
+    (httpStatusCode) => {
+      expect(isRetryableError({ $metadata: { httpStatusCode } })).toBe(false);
+    },
+  );
+
   it('prioritizes permanent error messages', () => {
     expect(
       isRetryableError({ message: 'Bad Request after a network timeout' }),

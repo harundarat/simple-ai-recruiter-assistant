@@ -19,7 +19,10 @@ async function withTimeout<T>(
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       reject(
-        new Error(`Operation timed out after ${formatDuration(timeoutMs)}`),
+        Object.assign(
+          new Error(`Operation timed out after ${formatDuration(timeoutMs)}`),
+          { code: 'ETIMEDOUT' },
+        ),
       );
     }, timeoutMs);
   });

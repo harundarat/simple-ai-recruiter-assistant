@@ -9,22 +9,27 @@ export class UploadService {
     cvFile: Express.MulterS3.File,
     projectReportFile: Express.MulterS3.File,
   ) {
-    const cvDetail = await this.prismaService.cV.create({
-      data: {
-        original_name: cvFile.originalname,
-        hosted_name: cvFile.key,
-        url: cvFile.location,
-      },
-    });
+    const { cvDetail, projectReportDetail } =
+      await this.prismaService.$transaction(async (transaction) => {
+        const cvDetail = await transaction.cV.create({
+          data: {
+            original_name: cvFile.originalname,
+            hosted_name: cvFile.key,
+            url: cvFile.location,
+          },
+        });
 
-    const projectReportDetail = await this.prismaService.projectReport.create({
-      data: {
-        cv_id: cvDetail.id,
-        original_name: projectReportFile.originalname,
-        hosted_name: projectReportFile.key,
-        url: projectReportFile.location,
-      },
-    });
+        const projectReportDetail = await transaction.projectReport.create({
+          data: {
+            cv_id: cvDetail.id,
+            original_name: projectReportFile.originalname,
+            hosted_name: projectReportFile.key,
+            url: projectReportFile.location,
+          },
+        });
+
+        return { cvDetail, projectReportDetail };
+      });
 
     return {
       cv_id: cvDetail.id,

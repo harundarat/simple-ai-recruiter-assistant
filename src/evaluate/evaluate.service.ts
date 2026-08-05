@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -50,6 +55,12 @@ export class EvaluateService {
       throw new BadRequestException('Project Report not found');
     }
 
+    if (projectReport.cv_id !== cvId) {
+      throw new BadRequestException(
+        'Project Report does not belong to the specified CV',
+      );
+    }
+
     // Create evaluation record with status 'queued'
     const evaluation = await this.prismaService.evaluation.create({
       data: {
@@ -60,13 +71,36 @@ export class EvaluateService {
       },
     });
 
-    // Add job to queue
-    await this.evaluationQueue.add('process-evaluation', {
-      evaluationId: evaluation.id,
-      jobTitle,
-      cvId,
-      projectReportId,
-    });
+    try {
+      await this.evaluationQueue.add(
+        'process-evaluation',
+        {
+          evaluationId: evaluation.id,
+          jobTitle,
+          cvId,
+          projectReportId,
+        },
+        {
+          jobId: `evaluation-${evaluation.id}`,
+          removeOnComplete: 1_000,
+          removeOnFail: 5_000,
+        },
+      );
+    } catch (error: unknown) {
+      await this.prismaService.evaluation.update({
+        where: { id: evaluation.id },
+        data: {
+          status: 'failed',
+          error_message: `Failed to enqueue evaluation: ${getErrorMessage(error)}`,
+          completed_at: new Date(),
+        },
+      });
+
+      throw new ServiceUnavailableException(
+        'Evaluation service is temporarily unavailable',
+        { cause: error },
+      );
+    }
 
     return { id: evaluation.id, status: 'queued' };
   }

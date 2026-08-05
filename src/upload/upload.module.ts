@@ -10,6 +10,7 @@ import {
   FILE_VALIDATION_CONSTANTS,
   FILE_VALIDATION_ERROR_MESSAGES,
 } from './constants/file-validation.constants';
+import { randomUUID } from 'node:crypto';
 
 @Module({
   imports: [
@@ -19,13 +20,16 @@ import {
       useFactory: (s3Service: S3Service, configService: ConfigService) => ({
         // Configure Multer to stream incoming files directly to S3
         storage: multerS3({
-          s3: s3Service.getS3Client() as any,
+          s3: s3Service.getS3Client(),
           bucket: configService.getOrThrow<string>('S3_BUCKET_NAME'),
-          // Generate a namespaced, timestamped key to keep filenames unique
+          // Generate a namespaced key that is unique and safe to log/use in URLs.
           key: (req, file, cb) => {
             const prefix = file.fieldname || 'files';
-            const safeName = file.originalname.replace(/\s+/g, '-');
-            cb(null, `${prefix}/${Date.now()}-${safeName}`);
+            const safeName = file.originalname.replace(
+              /[^a-zA-Z0-9._-]+/g,
+              '-',
+            );
+            cb(null, `${prefix}/${randomUUID()}-${safeName}`);
           },
         }),
         // Allow only PDF files as per case study requirements
@@ -34,8 +38,8 @@ import {
 
           // Check MIME type against allowed types
           const isMimeTypeValid =
-            FILE_VALIDATION_CONSTANTS.ALLOWED_MIME_TYPES.includes(
-              file.mimetype as any,
+            FILE_VALIDATION_CONSTANTS.ALLOWED_MIME_TYPES.some(
+              (mimeType) => mimeType === file.mimetype,
             );
 
           // Check file extension against allowed extensions

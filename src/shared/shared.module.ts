@@ -12,6 +12,7 @@ import {
 import { RetryExecutor } from './retry.executor';
 import type { RetryOptions } from './retry.executor';
 import { FILE_STORE, KNOWLEDGE_BASE } from './infrastructure.tokens';
+import { CircuitBreakerExecutor } from './circuit-breaker.executor';
 
 @Module({
   imports: [ConfigModule],
@@ -20,6 +21,7 @@ import { FILE_STORE, KNOWLEDGE_BASE } from './infrastructure.tokens';
     PrismaService,
     GoogleGeminiClient,
     RetryExecutor,
+    CircuitBreakerExecutor,
     { provide: GEMINI_CLIENT, useExisting: GoogleGeminiClient },
     {
       provide: GEMINI_RETRY_OPTIONS,
@@ -45,6 +47,7 @@ import { FILE_STORE, KNOWLEDGE_BASE } from './infrastructure.tokens';
     LLMService,
     ChromaService,
     RetryExecutor,
+    CircuitBreakerExecutor,
     GEMINI_CLIENT,
     GEMINI_RETRY_OPTIONS,
     FILE_STORE,

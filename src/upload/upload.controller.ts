@@ -3,13 +3,16 @@ import {
   Post,
   UploadedFiles,
   UseInterceptors,
+  UseFilters,
   UsePipes,
 } from '@nestjs/common';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { UploadService } from './upload.service';
 import { FilesValidationPipe } from './validators/file-validation.pipe';
+import { UploadExceptionFilter } from './upload-exception.filter';
 
 @Controller('upload')
+@UseFilters(UploadExceptionFilter)
 export class UploadController {
   constructor(private readonly uploadService: UploadService) {}
 

@@ -1,10 +1,11 @@
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 import { BadRequestException } from '@nestjs/common';
 import {
   FileValidationPipe,
   FilesValidationPipe,
 } from './file-validation.pipe';
 import { FILE_VALIDATION_CONSTANTS } from '../constants/file-validation.constants';
+import type { FileStore } from '../../shared/infrastructure.tokens';
 
 function createFile(
   overrides: Partial<Express.MulterS3.File> = {},
@@ -69,5 +70,22 @@ describe('FilesValidationPipe', () => {
     };
 
     expect(pipe.transform(files)).toBe(files);
+  });
+
+  it('deletes an already uploaded object when its pair is missing', async () => {
+    const deleteFiles = jest.fn<FileStore['deleteFiles']>().mockResolvedValue();
+    const cleanupPipe = new FilesValidationPipe({
+      deleteFiles,
+      getFile: jest.fn<FileStore['getFile']>(),
+      getS3Client: jest.fn<FileStore['getS3Client']>(),
+    });
+    const cv = createFile({ key: 'cv/file.pdf', bucket: 'bucket' });
+
+    await expect(cleanupPipe.transform({ cv: [cv] })).rejects.toThrow(
+      'Project Report file is required',
+    );
+    expect(deleteFiles).toHaveBeenCalledWith([
+      { bucket: 'bucket', key: 'cv/file.pdf' },
+    ]);
   });
 });

@@ -11,6 +11,8 @@ import {
   FILE_VALIDATION_ERROR_MESSAGES,
 } from './constants/file-validation.constants';
 import { randomUUID } from 'node:crypto';
+import { FilesValidationPipe } from './validators/file-validation.pipe';
+import { UploadExceptionFilter } from './upload-exception.filter';
 
 @Module({
   imports: [
@@ -70,7 +72,7 @@ import { randomUUID } from 'node:crypto';
     ConfigModule,
   ],
   controllers: [UploadController],
-  providers: [UploadService],
+  providers: [UploadService, FilesValidationPipe, UploadExceptionFilter],
   exports: [UploadService],
 })
 export class UploadModule {}

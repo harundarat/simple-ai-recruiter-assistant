@@ -1,8 +1,18 @@
-import { PipeTransform, Injectable, BadRequestException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+  Optional,
+  PipeTransform,
+} from '@nestjs/common';
 import {
   FILE_VALIDATION_CONSTANTS,
   FILE_VALIDATION_ERROR_MESSAGES,
 } from '../constants/file-validation.constants';
+import { FILE_STORE } from '../../shared/infrastructure.tokens';
+import type { FileStore } from '../../shared/infrastructure.tokens';
+import { getErrorMessage } from '../../shared/retry.utils';
 
 export interface FileValidationOptions {
   maxSize?: number; // in bytes
@@ -84,7 +94,36 @@ export class FileValidationPipe implements PipeTransform {
  */
 @Injectable()
 export class FilesValidationPipe implements PipeTransform {
+  private readonly logger = new Logger(FilesValidationPipe.name);
+
+  constructor(
+    @Optional() @Inject(FILE_STORE) private readonly fileStore?: FileStore,
+  ) {}
+
   transform(files: {
+    cv?: Express.MulterS3.File[];
+    project_report?: Express.MulterS3.File[];
+  }):
+    | {
+        cv: Express.MulterS3.File[];
+        project_report: Express.MulterS3.File[];
+      }
+    | Promise<never> {
+    try {
+      return this.validate(files);
+    } catch (error: unknown) {
+      const uploadedFiles = [
+        ...(files?.cv ?? []),
+        ...(files?.project_report ?? []),
+      ];
+      if (this.fileStore && uploadedFiles.length > 0) {
+        return this.cleanupAndRethrow(uploadedFiles, error);
+      }
+      throw error;
+    }
+  }
+
+  private validate(files: {
     cv?: Express.MulterS3.File[];
     project_report?: Express.MulterS3.File[];
   }): {
@@ -124,5 +163,25 @@ export class FilesValidationPipe implements PipeTransform {
       cv: Express.MulterS3.File[];
       project_report: Express.MulterS3.File[];
     };
+  }
+
+  private async cleanupAndRethrow(
+    files: Express.MulterS3.File[],
+    validationError: unknown,
+  ): Promise<never> {
+    const references = files
+      .filter((file) => Boolean(file.key && file.bucket))
+      .map((file) => ({ bucket: file.bucket, key: file.key }));
+    if (references.length > 0) {
+      try {
+        await this.fileStore?.deleteFiles(references);
+      } catch (cleanupError: unknown) {
+        this.logger.error('Failed to clean up files after upload validation', {
+          cause: getErrorMessage(cleanupError),
+          keys: references.map(({ key }) => key),
+        });
+      }
+    }
+    throw validationError;
   }
 }

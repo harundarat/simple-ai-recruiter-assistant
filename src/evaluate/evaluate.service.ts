@@ -14,8 +14,18 @@ import { ChromaService } from 'src/shared/chroma.service';
 import { CV_EVALUATION_SYSTEM_PROMPT } from './prompt/cv-evaluation.prompt';
 import { PROJECT_EVALUATION_SYSTEM_PROMPT } from './prompt/project-report-evaluation.prompt';
 import { FINAL_SYNTHESIS_SYSTEM_PROMPT } from './prompt/final-synthesis.prompt';
-import { CVEvaluationResult } from './dto/cv-evaluation-result.dto';
-import { ProjectEvaluationResult } from './dto/project-evaluation-result.dto';
+import {
+  CVEvaluationResult,
+  CVEvaluationResultSchema,
+} from './dto/cv-evaluation-result.dto';
+import {
+  ProjectEvaluationResult,
+  ProjectEvaluationResultSchema,
+} from './dto/project-evaluation-result.dto';
+import {
+  FinalSynthesisResult,
+  FinalSynthesisResultSchema,
+} from './dto/final-synthesis-result.dto';
 import { EvaluationStatus } from '../generated/prisma/enums';
 import { getErrorMessage } from '../shared/retry.utils';
 
@@ -205,7 +215,8 @@ Please analyze the attached CV PDF and evaluate the candidate based on the job d
         throw new Error('LLM response did not contain text output');
       }
 
-      const result = JSON.parse(resultText) as CVEvaluationResult;
+      const payload: unknown = JSON.parse(resultText);
+      const result = CVEvaluationResultSchema.parse(payload);
 
       this.logger.log('CV evaluation completed successfully');
       return result;
@@ -258,7 +269,8 @@ Please analyze the attached Project Report PDF and evaluate the candidate's impl
         throw new Error('LLM response did not contain text output');
       }
 
-      const result = JSON.parse(resultText) as ProjectEvaluationResult;
+      const payload: unknown = JSON.parse(resultText);
+      const result = ProjectEvaluationResultSchema.parse(payload);
 
       this.logger.log('Project Report evaluation completed successfully');
       return result;
@@ -279,7 +291,7 @@ Please analyze the attached Project Report PDF and evaluate the candidate's impl
   async synthesizeFinalResult(
     cvEvaluation: CVEvaluationResult,
     projectEvaluation: ProjectEvaluationResult,
-  ): Promise<{ overall_summary: string }> {
+  ): Promise<FinalSynthesisResult> {
     this.logger.log('Starting final synthesis...');
 
     try {
@@ -325,7 +337,8 @@ Based on the above evaluations, provide a comprehensive final synthesis that int
         throw new Error('LLM response did not contain text output');
       }
 
-      const result = JSON.parse(resultText) as { overall_summary: string };
+      const payload: unknown = JSON.parse(resultText);
+      const result = FinalSynthesisResultSchema.parse(payload);
 
       this.logger.log('Final synthesis completed successfully');
       return result;

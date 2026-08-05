@@ -1,14 +1,25 @@
-export interface ProjectEvaluationResult {
-  correctness_score: number;
-  correctness_reasoning: string;
-  code_quality_score: number;
-  code_quality_reasoning: string;
-  resilience_score: number;
-  resilience_reasoning: string;
-  documentation_score: number;
-  documentation_reasoning: string;
-  creativity_score: number;
-  creativity_reasoning: string;
-  project_score: number;
-  project_feedback: string;
-}
+import { z } from 'zod';
+
+const score = z.number().min(1).max(5);
+const explanation = z.string().trim().min(1);
+
+export const ProjectEvaluationResultSchema = z
+  .object({
+    correctness_score: score,
+    correctness_reasoning: explanation,
+    code_quality_score: score,
+    code_quality_reasoning: explanation,
+    resilience_score: score,
+    resilience_reasoning: explanation,
+    documentation_score: score,
+    documentation_reasoning: explanation,
+    creativity_score: score,
+    creativity_reasoning: explanation,
+    project_score: score,
+    project_feedback: explanation,
+  })
+  .strict();
+
+export type ProjectEvaluationResult = z.infer<
+  typeof ProjectEvaluationResultSchema
+>;

@@ -33,6 +33,7 @@ export class EvaluationProcessor extends WorkerHost {
 
     try {
       const result = await this.evaluateService.performEvaluation(
+        evaluationId,
         jobTitle,
         cvId,
         projectReportId,

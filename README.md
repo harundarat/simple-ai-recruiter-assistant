@@ -80,7 +80,7 @@ This system automates candidate evaluation through a sophisticated AI pipeline t
 │     • CV Evaluation (Gemini Flash Lite) │
 │     • Project Evaluation (Flash Lite)   │
 │     • Final Synthesis (Gemini Flash)    │
-│  5. Save results to database             │
+│  5. Checkpoint each document evaluation  │
 │  6. Update status to 'completed'         │
 └──────────────────────────────────────────┘
          │
@@ -106,6 +106,10 @@ Stage 2: Project Report Evaluation
 ├─ Model: Gemini Flash Lite (multimodal PDF support)
 ├─ Output: project_score, project_feedback, detailed scores
 └─ Reasoning: Consistent with CV evaluation, handles PDF well
+
+Checkpoint
+├─ Each validated Stage 1/2 payload is saved independently in PostgreSQL
+└─ BullMQ retries reuse valid checkpoints and only rerun missing stages
 
 Stage 3: Final Synthesis
 ├─ Input: Results from Stage 1 + Stage 2
@@ -549,9 +553,17 @@ or
 ```json
 {
   "id": 456,
-  "status": "processing"
+  "status": "processing",
+  "partial_result": {
+    "project_score": 4.5,
+    "project_feedback": "Excellent implementation with clear documentation."
+  }
 }
 ```
+
+`partial_result` is present only when at least one valid CV or project
+checkpoint is available. It exposes the same summary fields as the completed
+response; the full scoring and reasoning payload remains internal.
 
 **Response - Completed (200 OK):**
 
@@ -578,7 +590,11 @@ or
   "error_code": "LLM_UNAVAILABLE",
   "failed_stage": "CV_EVALUATION",
   "error_message": "AI evaluation service is temporarily unavailable",
-  "retry_count": 3
+  "retry_count": 3,
+  "partial_result": {
+    "project_score": 4.5,
+    "project_feedback": "Excellent implementation with clear documentation."
+  }
 }
 ```
 
@@ -772,10 +788,15 @@ Output (JSON):
 #### Step 4: Result Storage
 
 ```typescript
-// Save all results to database:
-//   - cv_match_rate, cv_feedback
-//   - project_score, project_feedback
-//   - overall_summary
+// After each independent document stage succeeds:
+//   - Save the full validated payload as a JSON checkpoint
+//   - Save its public score and feedback fields atomically
+//   - Preserve a successful sibling when the other stage fails
+// On BullMQ retry:
+//   - Validate and reuse existing checkpoints
+//   - Skip their S3, ChromaDB, and LLM calls
+// After final synthesis succeeds:
+//   - Save overall_summary
 // Update status to 'completed'
 // Record completion timestamp
 ```
@@ -837,6 +858,8 @@ try {
   // Log error with detailed context
   // Increment retry_count once per failed processing attempt.
   // Retryable + attempts remaining: set queued and throw to BullMQ.
+  // Valid CV/project checkpoints remain available for the next attempt.
+  // A checkpoint write failure is retryable at SAVE_CHECKPOINT.
   // Permanent: persist structured failure and throw UnrecoverableError.
   // Exhausted: persist structured terminal failure.
 }
@@ -1120,14 +1143,18 @@ continues to own whole-job retries and persisted worker state.
    - Alternative: Boolean flags → Rejected as less clear
 
 4. **Nullable result fields**
-   - Why: Only populated when status = completed
-   - Enforces data integrity
+   - Why: Populated independently as their pipeline stages complete
+   - Supports partial responses while preserving the completed response shape
 
-5. **Timing fields (started_at, completed_at)**
+5. **JSON checkpoints for CV and project evaluation**
+   - Why: Final synthesis needs the complete validated scores and reasoning
+   - Allows BullMQ retries to resume without repeating successful LLM calls
+
+6. **Timing fields (started_at, completed_at)**
    - Why: Performance monitoring, debugging
    - Can track evaluation duration
 
-6. **Error tracking (error_message, retry_count)**
+7. **Error tracking (error_message, retry_count)**
    - Why: Debugging failed evaluations
    - Support for retry mechanisms
 
@@ -1281,7 +1308,7 @@ Use `pnpm ts-node seed/test-chromadb.ts` after production-style PDF seeding to i
 2. **Advanced Error Handling**
    - ✅ ~~Exponential backoff for LLM API retries~~ **(IMPLEMENTED)**
    - [x] Circuit breaker for external services **(IMPLEMENTED)**
-   - Partial result storage (checkpoint evaluation progress)
+   - [x] Partial result storage (checkpoint evaluation progress) **(IMPLEMENTED)**
    - Advanced rate limit handling with adaptive backoff
 
 3. **Monitoring & Observability**

@@ -23,6 +23,7 @@ export const PIPELINE_STAGES = [
   'CV_EVALUATION',
   'PROJECT_EVALUATION',
   'FINAL_SYNTHESIS',
+  'SAVE_CHECKPOINT',
 ] as const;
 
 export type PipelineStage = (typeof PIPELINE_STAGES)[number];
@@ -34,6 +35,7 @@ const CIRCUIT_OPEN_ERROR_CODES: Record<PipelineStage, PipelineErrorCode> = {
   CV_EVALUATION: 'LLM_UNAVAILABLE',
   PROJECT_EVALUATION: 'LLM_UNAVAILABLE',
   FINAL_SYNTHESIS: 'LLM_UNAVAILABLE',
+  SAVE_CHECKPOINT: 'INTERNAL_ERROR',
 };
 
 const PUBLIC_MESSAGES: Record<PipelineErrorCode, string> = {
@@ -170,6 +172,15 @@ export function toPipelineError(
       errorCode: invalidResponse ? 'LLM_INVALID_RESPONSE' : 'LLM_UNAVAILABLE',
       failedStage,
       retryable: !invalidResponse && isRetryableError(error),
+      cause: error,
+    });
+  }
+
+  if (failedStage === 'SAVE_CHECKPOINT') {
+    return new PipelineError({
+      errorCode: 'INTERNAL_ERROR',
+      failedStage,
+      retryable: true,
       cause: error,
     });
   }

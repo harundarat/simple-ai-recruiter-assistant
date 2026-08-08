@@ -129,6 +129,12 @@ interface ResultResponse {
     project_feedback: string;
     overall_summary: string;
   };
+  partial_result?: {
+    cv_match_rate?: number;
+    cv_feedback?: string;
+    project_score?: number;
+    project_feedback?: string;
+  };
 }
 
 describe('Evaluation pipeline with real local infrastructure', () => {
@@ -256,6 +262,14 @@ describe('Evaluation pipeline with real local infrastructure', () => {
       retry_count: 0,
       error_code: null,
       failed_stage: null,
+      cv_checkpoint: expect.objectContaining({
+        cv_match_rate: 0.88,
+        cv_feedback: 'Deterministic CV feedback',
+      }),
+      project_checkpoint: expect.objectContaining({
+        project_score: 4.4,
+        project_feedback: 'Deterministic project feedback',
+      }),
     });
   });
 
@@ -282,8 +296,29 @@ describe('Evaluation pipeline with real local infrastructure', () => {
       failed_stage: 'CV_EVALUATION',
       error_message: 'AI evaluation service is temporarily unavailable',
       retry_count: 3,
+      partial_result: {
+        project_score: 4.4,
+        project_feedback: 'Deterministic project feedback',
+      },
     });
     expect(fakeGemini.getAttemptCount('CV_EVALUATION')).toBe(6);
+    expect(fakeGemini.getAttemptCount('PROJECT_EVALUATION')).toBe(1);
+    expect(fakeGemini.getAttemptCount('FINAL_SYNTHESIS')).toBe(0);
+  });
+
+  it('reuses both checkpoints when final synthesis needs a Bull retry', async () => {
+    fakeGemini.setBehavior('FINAL_SYNTHESIS', 'transient', 2);
+    const evaluationId = await startEvaluation(await uploadPair());
+
+    await expect(pollResult(evaluationId)).resolves.toMatchObject({
+      status: 'completed',
+    });
+    expect(fakeGemini.getAttemptCount('CV_EVALUATION')).toBe(1);
+    expect(fakeGemini.getAttemptCount('PROJECT_EVALUATION')).toBe(1);
+    expect(fakeGemini.getAttemptCount('FINAL_SYNTHESIS')).toBe(3);
+    await expect(
+      prisma.evaluation.findUniqueOrThrow({ where: { id: evaluationId } }),
+    ).resolves.toMatchObject({ retry_count: 1 });
   });
 
   it.each(['malformed-json', 'schema-invalid'] as FakeGeminiMode[])(
@@ -297,6 +332,12 @@ describe('Evaluation pipeline with real local infrastructure', () => {
         error_code: 'LLM_INVALID_RESPONSE',
         failed_stage: 'FINAL_SYNTHESIS',
         retry_count: 1,
+        partial_result: {
+          cv_match_rate: 0.88,
+          cv_feedback: 'Deterministic CV feedback',
+          project_score: 4.4,
+          project_feedback: 'Deterministic project feedback',
+        },
       });
       expect(fakeGemini.getAttemptCount('FINAL_SYNTHESIS')).toBe(1);
     },

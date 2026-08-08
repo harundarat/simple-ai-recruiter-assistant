@@ -149,60 +149,84 @@ export class EvaluateService {
   }
 
   async performEvaluation(
+    evaluationId: number,
     jobTitle: string,
     cvId: number,
     projectReportId: number,
   ) {
-    const [cv, projectReport] = await Promise.all([
-      this.prismaService.cV.findUnique({ where: { id: cvId } }),
-      this.prismaService.projectReport.findUnique({
-        where: { id: projectReportId },
-      }),
-    ]);
+    const checkpoint = await this.prismaService.evaluation.findUnique({
+      where: { id: evaluationId },
+      select: {
+        cv_checkpoint: true,
+        project_checkpoint: true,
+      },
+    });
 
-    if (!cv?.hosted_name || !projectReport?.hosted_name) {
+    if (!checkpoint) {
       throw new PipelineError({
-        errorCode: 'STORAGE_OBJECT_NOT_FOUND',
-        failedStage: 'LOAD_FILES',
+        errorCode: 'INTERNAL_ERROR',
+        failedStage: 'SAVE_CHECKPOINT',
         retryable: false,
+        publicMessage: 'Evaluation record could not be found',
       });
     }
 
-    const bucketName = this.configService.getOrThrow<string>('S3_BUCKET_NAME');
-    let cvBuffer: Buffer;
-    let projectReportBuffer: Buffer;
-    try {
-      [cvBuffer, projectReportBuffer] = await Promise.all([
-        this.fileStore.getFile(bucketName, cv.hosted_name),
-        this.fileStore.getFile(bucketName, projectReport.hosted_name),
-      ]);
-    } catch (error: unknown) {
-      throw toPipelineError(error, 'LOAD_FILES');
+    const storedCv = CVEvaluationResultSchema.safeParse(
+      checkpoint.cv_checkpoint,
+    );
+    const storedProject = ProjectEvaluationResultSchema.safeParse(
+      checkpoint.project_checkpoint,
+    );
+
+    if (checkpoint.cv_checkpoint !== null && !storedCv.success) {
+      this.logger.warn(`Ignoring invalid CV checkpoint for ${evaluationId}`);
+    }
+    if (checkpoint.project_checkpoint !== null && !storedProject.success) {
+      this.logger.warn(
+        `Ignoring invalid project checkpoint for ${evaluationId}`,
+      );
     }
 
-    let jobDescription: { document: string; role: string };
-    let caseStudyBrief: string;
-    let cvRubric: string;
-    let projectRubric: string;
-    try {
-      jobDescription = await this.knowledgeBase.getJobDescription(jobTitle);
-      [caseStudyBrief, cvRubric, projectRubric] = await Promise.all([
-        this.knowledgeBase.getCaseStudyBrief(jobDescription.role),
-        this.knowledgeBase.getScoringRubric('cv', jobDescription.role),
-        this.knowledgeBase.getScoringRubric('project', jobDescription.role),
-      ]);
-    } catch (error: unknown) {
-      throw toPipelineError(error, 'LOAD_GROUND_TRUTH');
+    let jobDescription: { document: string; role: string } | undefined;
+    if (!storedCv.success || !storedProject.success) {
+      try {
+        jobDescription = await this.knowledgeBase.getJobDescription(jobTitle);
+      } catch (error: unknown) {
+        throw toPipelineError(error, 'LOAD_GROUND_TRUTH');
+      }
     }
 
-    const [cvEvaluation, projectEvaluation] = await Promise.all([
-      this.evaluateCV(cvBuffer, jobDescription.document, cvRubric),
-      this.evaluateProjectReport(
-        projectReportBuffer,
-        caseStudyBrief,
-        projectRubric,
-      ),
+    const cvPromise = storedCv.success
+      ? Promise.resolve(storedCv.data)
+      : this.evaluateAndCheckpointCV(evaluationId, cvId, jobDescription!);
+    const projectPromise = storedProject.success
+      ? Promise.resolve(storedProject.data)
+      : this.evaluateAndCheckpointProject(
+          evaluationId,
+          projectReportId,
+          jobDescription!,
+        );
+    const [cvOutcome, projectOutcome] = await Promise.allSettled([
+      cvPromise,
+      projectPromise,
     ]);
+
+    if (
+      cvOutcome.status === 'rejected' ||
+      projectOutcome.status === 'rejected'
+    ) {
+      const failures = [cvOutcome, projectOutcome].filter(
+        (outcome): outcome is PromiseRejectedResult =>
+          outcome.status === 'rejected',
+      );
+      const terminalFailure = failures.find(
+        ({ reason }) => reason instanceof PipelineError && !reason.retryable,
+      );
+      throw terminalFailure?.reason ?? failures[0].reason;
+    }
+
+    const cvEvaluation = cvOutcome.value;
+    const projectEvaluation = projectOutcome.value;
     const finalSynthesis = await this.synthesizeFinalResult(
       cvEvaluation,
       projectEvaluation,
@@ -215,6 +239,127 @@ export class EvaluateService {
       project_feedback: projectEvaluation.project_feedback,
       overall_summary: finalSynthesis.overall_summary,
     };
+  }
+
+  private async evaluateAndCheckpointCV(
+    evaluationId: number,
+    cvId: number,
+    jobDescription: { document: string; role: string },
+  ): Promise<CVEvaluationResult> {
+    const cv = await this.prismaService.cV.findUnique({
+      where: { id: cvId },
+    });
+    if (!cv?.hosted_name) {
+      throw new PipelineError({
+        errorCode: 'STORAGE_OBJECT_NOT_FOUND',
+        failedStage: 'LOAD_FILES',
+        retryable: false,
+      });
+    }
+
+    const bucketName = this.configService.getOrThrow<string>('S3_BUCKET_NAME');
+    const [cvBuffer, cvRubric] = await Promise.all([
+      this.loadEvaluationFile(bucketName, cv.hosted_name),
+      this.loadGroundTruth(() =>
+        this.knowledgeBase.getScoringRubric('cv', jobDescription.role),
+      ),
+    ]);
+    const result = await this.evaluateCV(
+      cvBuffer,
+      jobDescription.document,
+      cvRubric,
+    );
+
+    await this.saveCheckpoint(evaluationId, {
+      cv_checkpoint: result,
+      cv_match_rate: result.cv_match_rate,
+      cv_feedback: result.cv_feedback,
+    });
+    return result;
+  }
+
+  private async evaluateAndCheckpointProject(
+    evaluationId: number,
+    projectReportId: number,
+    jobDescription: { document: string; role: string },
+  ): Promise<ProjectEvaluationResult> {
+    const projectReport = await this.prismaService.projectReport.findUnique({
+      where: { id: projectReportId },
+    });
+    if (!projectReport?.hosted_name) {
+      throw new PipelineError({
+        errorCode: 'STORAGE_OBJECT_NOT_FOUND',
+        failedStage: 'LOAD_FILES',
+        retryable: false,
+      });
+    }
+
+    const bucketName = this.configService.getOrThrow<string>('S3_BUCKET_NAME');
+    const [projectReportBuffer, caseStudyBrief, projectRubric] =
+      await Promise.all([
+        this.loadEvaluationFile(bucketName, projectReport.hosted_name),
+        this.loadGroundTruth(() =>
+          this.knowledgeBase.getCaseStudyBrief(jobDescription.role),
+        ),
+        this.loadGroundTruth(() =>
+          this.knowledgeBase.getScoringRubric('project', jobDescription.role),
+        ),
+      ]);
+    const result = await this.evaluateProjectReport(
+      projectReportBuffer,
+      caseStudyBrief,
+      projectRubric,
+    );
+
+    await this.saveCheckpoint(evaluationId, {
+      project_checkpoint: result,
+      project_score: result.project_score,
+      project_feedback: result.project_feedback,
+    });
+    return result;
+  }
+
+  private async loadEvaluationFile(
+    bucketName: string,
+    hostedName: string,
+  ): Promise<Buffer> {
+    try {
+      return await this.fileStore.getFile(bucketName, hostedName);
+    } catch (error: unknown) {
+      throw toPipelineError(error, 'LOAD_FILES');
+    }
+  }
+
+  private async loadGroundTruth<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch (error: unknown) {
+      throw toPipelineError(error, 'LOAD_GROUND_TRUTH');
+    }
+  }
+
+  private async saveCheckpoint(
+    evaluationId: number,
+    data:
+      | {
+          cv_checkpoint: CVEvaluationResult;
+          cv_match_rate: number;
+          cv_feedback: string;
+        }
+      | {
+          project_checkpoint: ProjectEvaluationResult;
+          project_score: number;
+          project_feedback: string;
+        },
+  ): Promise<void> {
+    try {
+      await this.prismaService.evaluation.update({
+        where: { id: evaluationId },
+        data,
+      });
+    } catch (error: unknown) {
+      throw toPipelineError(error, 'SAVE_CHECKPOINT');
+    }
   }
 
   async evaluateCV(

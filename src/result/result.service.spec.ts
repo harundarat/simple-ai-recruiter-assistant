@@ -7,6 +7,34 @@ type EvaluationRecord = Awaited<
   ReturnType<PrismaService['evaluation']['findUnique']>
 >;
 
+const cvCheckpoint = {
+  technical_skills_score: 4,
+  technical_skills_reasoning: 'Strong backend skills',
+  experience_score: 4,
+  experience_reasoning: 'Relevant experience',
+  achievements_score: 3,
+  achievements_reasoning: 'Some measurable impact',
+  cultural_fit_score: 5,
+  cultural_fit_reasoning: 'Strong collaboration',
+  cv_match_rate: 0.9,
+  cv_feedback: 'Strong match',
+};
+
+const projectCheckpoint = {
+  correctness_score: 5,
+  correctness_reasoning: 'Requirements met',
+  code_quality_score: 4,
+  code_quality_reasoning: 'Well structured',
+  resilience_score: 4,
+  resilience_reasoning: 'Handles failures',
+  documentation_score: 4,
+  documentation_reasoning: 'Clear documentation',
+  creativity_score: 3,
+  creativity_reasoning: 'Useful additions',
+  project_score: 4.5,
+  project_feedback: 'Well built',
+};
+
 const completedEvaluation = {
   id: 42,
   cv_id: 1,
@@ -18,6 +46,8 @@ const completedEvaluation = {
   project_score: 4.5,
   project_feedback: 'Well built',
   overall_summary: 'Recommended',
+  cv_checkpoint: null,
+  project_checkpoint: null,
   error_code: null,
   failed_stage: null,
   error_message: null,
@@ -66,6 +96,51 @@ describe('ResultService', () => {
       failed_stage: 'CV_EVALUATION',
       error_message: 'Gemini unavailable',
       retry_count: 0,
+    });
+  });
+
+  it('returns a summarized partial result for a failed evaluation', async () => {
+    const { service } = createService({
+      ...completedEvaluation,
+      status: 'failed',
+      error_code: 'LLM_INVALID_RESPONSE',
+      failed_stage: 'FINAL_SYNTHESIS',
+      error_message: 'Invalid synthesis',
+      cv_checkpoint: cvCheckpoint,
+      project_checkpoint: projectCheckpoint,
+    });
+
+    await expect(service.getEvaluationResult(42)).resolves.toEqual({
+      id: 42,
+      status: 'failed',
+      error_code: 'LLM_INVALID_RESPONSE',
+      failed_stage: 'FINAL_SYNTHESIS',
+      error_message: 'Invalid synthesis',
+      retry_count: 0,
+      partial_result: {
+        cv_match_rate: 0.9,
+        cv_feedback: 'Strong match',
+        project_score: 4.5,
+        project_feedback: 'Well built',
+      },
+    });
+  });
+
+  it('returns only the available valid checkpoint while processing', async () => {
+    const { service } = createService({
+      ...completedEvaluation,
+      status: 'processing',
+      cv_checkpoint: { invalid: true },
+      project_checkpoint: projectCheckpoint,
+    });
+
+    await expect(service.getEvaluationResult(42)).resolves.toEqual({
+      id: 42,
+      status: 'processing',
+      partial_result: {
+        project_score: 4.5,
+        project_feedback: 'Well built',
+      },
     });
   });
 

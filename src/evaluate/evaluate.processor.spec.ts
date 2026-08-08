@@ -47,6 +47,12 @@ describe('EvaluationProcessor', () => {
 
     await expect(processor.process(createJob())).resolves.toBeUndefined();
 
+    expect(performEvaluation).toHaveBeenCalledWith(
+      42,
+      'Backend Developer',
+      1,
+      2,
+    );
     expect(update).toHaveBeenNthCalledWith(1, {
       where: { id: 42 },
       data: {

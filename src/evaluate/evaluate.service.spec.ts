@@ -205,24 +205,27 @@ const finalSynthesis = {
 };
 
 describe('EvaluateService pipeline', () => {
+  const cvFindUnique = jest.fn<() => Promise<unknown>>();
+  const projectFindUnique = jest.fn<() => Promise<unknown>>();
+  const checkpointFindUnique = jest.fn<() => Promise<unknown>>();
+  const checkpointUpdate = jest.fn<() => Promise<unknown>>();
   const getFile = jest.fn<() => Promise<Buffer>>();
   const getJobDescription = jest.fn<() => Promise<unknown>>();
   const getCaseStudyBrief = jest.fn<() => Promise<string>>();
   const getScoringRubric = jest.fn<() => Promise<string>>();
-  const callPDF = jest.fn<() => Promise<unknown>>();
+  const callPDF =
+    jest.fn<
+      (stage: 'CV_EVALUATION' | 'PROJECT_EVALUATION') => Promise<unknown>
+    >();
   const callText = jest.fn<() => Promise<unknown>>();
 
   const service = new EvaluateService(
     {
-      cV: {
-        findUnique: jest.fn(() =>
-          Promise.resolve({ id: 1, hosted_name: 'cv/file.pdf' }),
-        ),
-      },
-      projectReport: {
-        findUnique: jest.fn(() =>
-          Promise.resolve({ id: 2, hosted_name: 'project/file.pdf' }),
-        ),
+      cV: { findUnique: cvFindUnique },
+      projectReport: { findUnique: projectFindUnique },
+      evaluation: {
+        findUnique: checkpointFindUnique,
+        update: checkpointUpdate,
       },
     } as unknown as PrismaService,
     { getFile } as unknown as S3Service,
@@ -245,6 +248,16 @@ describe('EvaluateService pipeline', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    cvFindUnique.mockResolvedValue({ id: 1, hosted_name: 'cv/file.pdf' });
+    projectFindUnique.mockResolvedValue({
+      id: 2,
+      hosted_name: 'project/file.pdf',
+    });
+    checkpointFindUnique.mockResolvedValue({
+      cv_checkpoint: null,
+      project_checkpoint: null,
+    });
+    checkpointUpdate.mockResolvedValue({ id: 42 });
     getFile.mockResolvedValue(Buffer.from('pdf'));
     getJobDescription.mockResolvedValue({
       document: 'Backend job description',
@@ -260,7 +273,7 @@ describe('EvaluateService pipeline', () => {
 
   it('evaluates both documents against role-scoped ground truth', async () => {
     await expect(
-      service.performEvaluation('Backend Developer', 1, 2),
+      service.performEvaluation(42, 'Backend Developer', 1, 2),
     ).resolves.toEqual({
       cv_match_rate: 0.8,
       cv_feedback: 'Strong overall CV',
@@ -284,6 +297,140 @@ describe('EvaluateService pipeline', () => {
     expect(getScoringRubric).toHaveBeenCalledWith('project', 'backend');
     expect(callPDF).toHaveBeenCalledTimes(2);
     expect(callText).toHaveBeenCalledTimes(1);
+    expect(checkpointUpdate).toHaveBeenCalledWith({
+      where: { id: 42 },
+      data: {
+        cv_checkpoint: cvEvaluation,
+        cv_match_rate: 0.8,
+        cv_feedback: 'Strong overall CV',
+      },
+    });
+    expect(checkpointUpdate).toHaveBeenCalledWith({
+      where: { id: 42 },
+      data: {
+        project_checkpoint: projectEvaluation,
+        project_score: 4.2,
+        project_feedback: 'Strong implementation',
+      },
+    });
+  });
+
+  it('resumes from both checkpoints without loading external inputs', async () => {
+    checkpointFindUnique.mockResolvedValue({
+      cv_checkpoint: cvEvaluation,
+      project_checkpoint: projectEvaluation,
+    });
+
+    await expect(
+      service.performEvaluation(42, 'Backend Developer', 1, 2),
+    ).resolves.toMatchObject({
+      cv_match_rate: 0.8,
+      project_score: 4.2,
+      overall_summary: 'Strong candidate for the role',
+    });
+
+    expect(getJobDescription).not.toHaveBeenCalled();
+    expect(getFile).not.toHaveBeenCalled();
+    expect(callPDF).not.toHaveBeenCalled();
+    expect(checkpointUpdate).not.toHaveBeenCalled();
+    expect(callText).toHaveBeenCalledTimes(1);
+  });
+
+  it('only evaluates the missing stage when one checkpoint exists', async () => {
+    checkpointFindUnique.mockResolvedValue({
+      cv_checkpoint: cvEvaluation,
+      project_checkpoint: null,
+    });
+    callPDF.mockReset();
+    callPDF.mockResolvedValue({ text: JSON.stringify(projectEvaluation) });
+
+    await service.performEvaluation(42, 'Backend Developer', 1, 2);
+
+    expect(cvFindUnique).not.toHaveBeenCalled();
+    expect(projectFindUnique).toHaveBeenCalledTimes(1);
+    expect(getFile).toHaveBeenCalledTimes(1);
+    expect(getScoringRubric).not.toHaveBeenCalledWith('cv', 'backend');
+    expect(getScoringRubric).toHaveBeenCalledWith('project', 'backend');
+    expect(callPDF).toHaveBeenCalledTimes(1);
+    expect(checkpointUpdate).toHaveBeenCalledTimes(1);
+    expect(checkpointUpdate).toHaveBeenCalledWith({
+      where: { id: 42 },
+      data: {
+        project_checkpoint: projectEvaluation,
+        project_score: 4.2,
+        project_feedback: 'Strong implementation',
+      },
+    });
+  });
+
+  it('stores a successful sibling checkpoint before propagating a failure', async () => {
+    const cvError = new PipelineError({
+      errorCode: 'LLM_UNAVAILABLE',
+      failedStage: 'CV_EVALUATION',
+      retryable: true,
+    });
+    callPDF.mockReset();
+    callPDF.mockImplementation((stage) =>
+      stage === 'CV_EVALUATION'
+        ? Promise.reject(cvError)
+        : Promise.resolve({ text: JSON.stringify(projectEvaluation) }),
+    );
+
+    await expect(
+      service.performEvaluation(42, 'Backend Developer', 1, 2),
+    ).rejects.toBe(cvError);
+
+    expect(checkpointUpdate).toHaveBeenCalledTimes(1);
+    expect(checkpointUpdate).toHaveBeenCalledWith({
+      where: { id: 42 },
+      data: {
+        project_checkpoint: projectEvaluation,
+        project_score: 4.2,
+        project_feedback: 'Strong implementation',
+      },
+    });
+    expect(callText).not.toHaveBeenCalled();
+  });
+
+  it('recomputes an invalid checkpoint instead of reusing it', async () => {
+    checkpointFindUnique.mockResolvedValue({
+      cv_checkpoint: { unexpected: true },
+      project_checkpoint: projectEvaluation,
+    });
+    callPDF.mockReset();
+    callPDF.mockResolvedValue({ text: JSON.stringify(cvEvaluation) });
+
+    await service.performEvaluation(42, 'Backend Developer', 1, 2);
+
+    expect(cvFindUnique).toHaveBeenCalledTimes(1);
+    expect(projectFindUnique).not.toHaveBeenCalled();
+    expect(callPDF).toHaveBeenCalledTimes(1);
+    expect(checkpointUpdate).toHaveBeenCalledWith({
+      where: { id: 42 },
+      data: {
+        cv_checkpoint: cvEvaluation,
+        cv_match_rate: 0.8,
+        cv_feedback: 'Strong overall CV',
+      },
+    });
+  });
+
+  it('maps a checkpoint write failure to a retryable checkpoint error', async () => {
+    checkpointFindUnique.mockResolvedValue({
+      cv_checkpoint: null,
+      project_checkpoint: projectEvaluation,
+    });
+    callPDF.mockReset();
+    callPDF.mockResolvedValue({ text: JSON.stringify(cvEvaluation) });
+    checkpointUpdate.mockRejectedValue(new Error('database unavailable'));
+
+    await expect(
+      service.performEvaluation(42, 'Backend Developer', 1, 2),
+    ).rejects.toMatchObject<Partial<PipelineError>>({
+      errorCode: 'INTERNAL_ERROR',
+      failedStage: 'SAVE_CHECKPOINT',
+      retryable: true,
+    });
   });
 
   it('rejects an out-of-range LLM score', async () => {

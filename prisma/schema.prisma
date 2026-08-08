@@ -58,6 +58,7 @@ enum EvaluationFailedStage {
   CV_EVALUATION
   PROJECT_EVALUATION
   FINAL_SYNTHESIS
+  SAVE_CHECKPOINT
 }
 
 model Evaluation {
@@ -69,12 +70,14 @@ model Evaluation {
   job_title         String
   status            EvaluationStatus @default(queued)
 
-  // Result fields (nullable, populated when status = completed)
-  cv_match_rate    Float?
-  cv_feedback      String? @db.Text
-  project_score    Float?
-  project_feedback String? @db.Text
-  overall_summary  String? @db.Text
+  // Result fields (nullable, populated as their pipeline stages complete)
+  cv_match_rate      Float?
+  cv_feedback        String? @db.Text
+  project_score      Float?
+  project_feedback   String? @db.Text
+  overall_summary    String? @db.Text
+  cv_checkpoint      Json?
+  project_checkpoint Json?
 
   // Error tracking (for failed jobs)
   error_code    EvaluationErrorCode?

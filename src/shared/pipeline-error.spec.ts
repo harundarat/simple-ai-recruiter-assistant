@@ -35,6 +35,16 @@ describe('pipeline error mapping', () => {
     });
   });
 
+  it('maps checkpoint persistence failures to retryable internal errors', () => {
+    expect(
+      toPipelineError(new Error('database unavailable'), 'SAVE_CHECKPOINT'),
+    ).toMatchObject({
+      errorCode: 'INTERNAL_ERROR',
+      failedStage: 'SAVE_CHECKPOINT',
+      retryable: true,
+    });
+  });
+
   it.each([
     ['redis', 'enqueue', 'ENQUEUE', 'QUEUE_UNAVAILABLE'],
     ['s3', 'get-object', 'LOAD_FILES', 'STORAGE_UNAVAILABLE'],

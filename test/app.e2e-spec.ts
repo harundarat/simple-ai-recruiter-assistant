@@ -286,6 +286,19 @@ describe('Evaluation pipeline with real local infrastructure', () => {
     ).resolves.toMatchObject({ retry_count: 0 });
   });
 
+  it('honors a Gemini rate-limit hint and recovers inside the local retry', async () => {
+    fakeGemini.setBehavior('CV_EVALUATION', 'rate-limited', 1);
+    const evaluationId = await startEvaluation(await uploadPair());
+
+    await expect(pollResult(evaluationId)).resolves.toMatchObject({
+      status: 'completed',
+    });
+    expect(fakeGemini.getAttemptCount('CV_EVALUATION')).toBe(2);
+    await expect(
+      prisma.evaluation.findUniqueOrThrow({ where: { id: evaluationId } }),
+    ).resolves.toMatchObject({ retry_count: 0 });
+  });
+
   it('exhausts two local Gemini calls across all three Bull attempts', async () => {
     fakeGemini.setBehavior('CV_EVALUATION', 'persistent-transient');
     const evaluationId = await startEvaluation(await uploadPair());

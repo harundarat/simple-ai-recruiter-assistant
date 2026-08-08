@@ -13,6 +13,7 @@ import { RetryExecutor } from './retry.executor';
 import type { RetryOptions } from './retry.executor';
 import { FILE_STORE, KNOWLEDGE_BASE } from './infrastructure.tokens';
 import { CircuitBreakerExecutor } from './circuit-breaker.executor';
+import { RateLimitCoordinator } from './rate-limit.coordinator';
 
 @Module({
   imports: [ConfigModule],
@@ -20,6 +21,7 @@ import { CircuitBreakerExecutor } from './circuit-breaker.executor';
     S3Service,
     PrismaService,
     GoogleGeminiClient,
+    RateLimitCoordinator,
     RetryExecutor,
     CircuitBreakerExecutor,
     { provide: GEMINI_CLIENT, useExisting: GoogleGeminiClient },
@@ -29,7 +31,8 @@ import { CircuitBreakerExecutor } from './circuit-breaker.executor';
         maxAttempts: 2,
         initialDelayMs:
           configService.get<number>('GEMINI_RETRY_DELAY_MS') ?? 500,
-        maxDelayMs: 2_000,
+        maxDelayMs:
+          configService.get<number>('GEMINI_MAX_RETRY_DELAY_MS') ?? 60_000,
         backoffMultiplier: 2,
         timeoutMs: configService.get<number>('GEMINI_TIMEOUT_MS') ?? 90_000,
         jitterRatio: configService.get<number>('RETRY_JITTER_RATIO') ?? 0.2,
@@ -47,6 +50,7 @@ import { CircuitBreakerExecutor } from './circuit-breaker.executor';
     LLMService,
     ChromaService,
     RetryExecutor,
+    RateLimitCoordinator,
     CircuitBreakerExecutor,
     GEMINI_CLIENT,
     GEMINI_RETRY_OPTIONS,

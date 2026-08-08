@@ -269,6 +269,10 @@ S3_BUCKET_NAME="your-bucket-name"
 
 # Google Gemini API
 GOOGLE_GEMINI_API_KEY="your-gemini-api-key"
+GEMINI_RETRY_DELAY_MS="500"
+GEMINI_MAX_RETRY_DELAY_MS="60000"
+GEMINI_TIMEOUT_MS="90000"
+RETRY_JITTER_RATIO="0.2"
 
 # ChromaDB
 CHROMA_HOST="localhost"
@@ -292,6 +296,13 @@ CIRCUIT_BREAKER_RESET_TIMEOUT_MS="30000"
 Circuit breaker settings are read at startup. `CIRCUIT_BREAKER_ENABLED=false`
 bypasses circuit state while retaining the existing retry and timeout behavior.
 The failure threshold and reset timeout must be positive integers.
+
+Gemini rate limits use process-local cooldowns keyed by model. A 429 response
+uses `Retry-After`, `retry-after-ms`, or Google `RetryInfo.retryDelay` when the
+SDK exposes one; otherwise the cooldown grows adaptively from
+`GEMINI_RETRY_DELAY_MS` up to `GEMINI_MAX_RETRY_DELAY_MS`. Jitter is added only
+above the minimum cooldown; provider hints are honored within the configured
+maximum delay.
 
 ### 2. Run database migrations
 
@@ -822,6 +833,8 @@ Circuit breaker
     ↓
 Local retry + timeout
     ↓
+Per-model rate-limit cooldown
+    ↓
 External service
 ```
 
@@ -841,6 +854,14 @@ half-open probe: success closes the circuit, while a transient failure reopens
 it. Permanent errors and domain validation failures do not increment the
 breaker. Because each breaker wraps the whole retry sequence, two exhausted
 local attempts count as one circuit failure.
+
+HTTP 429 failures are excluded from the Gemini circuit threshold. They instead
+update a process-local cooldown shared by operations using the same model:
+CV/project evaluation share the Flash Lite cooldown, while Flash synthesis and
+Gemini embeddings use separate cooldowns. Calls already in flight are not
+cancelled, but subsequent attempts and operations wait for the latest shared
+deadline. A successful post-cooldown request resets that model's adaptive
+streak.
 
 The operation that reaches the threshold still returns its original service
 error and follows the normal BullMQ retry rules. A later job that encounters an
@@ -872,6 +893,7 @@ try {
 - Processor error handling: `src/evaluate/evaluate.processor.ts`
 - LLM service: `src/shared/llm.service.ts`
 - Circuit breaker registry: `src/shared/circuit-breaker.executor.ts`
+- Adaptive rate limits: `src/shared/rate-limit.coordinator.ts`
 
 ### 5. RAG (Retrieval-Augmented Generation)
 
@@ -1052,6 +1074,7 @@ const jobDescription =
 
 - ✅ **File upload validation** (dual-layer: Multer + validation pipes)
 - ✅ **Automatic retry with exponential backoff** for LLM API calls
+- ✅ **Adaptive Gemini rate-limit cooldowns** per model with provider hints
 - ✅ **Smart error classification** (retryable vs permanent errors)
 - ✅ Per-service circuit breakers for Gemini, Chroma, S3, and Redis enqueue
 - ✅ Structured public errors with error code and failed stage
@@ -1074,7 +1097,7 @@ Implemented through injectable retry policies and infrastructure gateways:
 
 | Boundary                 | Total attempts | Backoff                                      |
 | ------------------------ | -------------- | -------------------------------------------- |
-| Each Gemini operation    | 2              | Exponential, bounded, 20% jitter             |
+| Each Gemini operation    | 2              | Adaptive per-model cooldown, max 60s, 20% jitter |
 | Redis enqueue            | 2              | Same stable `jobId` for idempotency          |
 | Each BullMQ worker job   | 3              | Exponential from 1 second, 20% jitter        |
 | E2E equivalents          | Same counts    | Short delays and no jitter for deterministic |
@@ -1096,7 +1119,7 @@ Implemented through injectable retry policies and infrastructure gateways:
 **Example retry flow:**
 
 ```
-Gemini attempt 1: Rate limit (429) → bounded wait
+Gemini attempt 1: Rate limit (429) → provider hint or adaptive shared cooldown
 Gemini attempt 2: still unavailable → BullMQ schedules the next job attempt
 ```
 
@@ -1114,11 +1137,11 @@ The public API remains service-oriented. An open circuit maps to
 operation are retained only in internal errors and logs; they are not added to
 the response schema or database schema.
 
-**Implementation details:** `src/shared/retry.executor.ts`, `src/shared/circuit-breaker.executor.ts`, `src/shared/pipeline-error.ts`, and `src/evaluate/evaluate.processor.ts`
+Rate-limit cooldowns are deliberately process-local, matching the current
+single-worker deployment. They are not coordinated across application replicas;
+a future multi-replica deployment can move the same model-keyed state to Redis.
 
-**Not implemented (future work):**
-
-- ❌ Partial result storage (if one stage succeeds but next fails)
+**Implementation details:** `src/shared/retry.executor.ts`, `src/shared/rate-limit.coordinator.ts`, `src/shared/circuit-breaker.executor.ts`, `src/shared/pipeline-error.ts`, and `src/evaluate/evaluate.processor.ts`
 
 **Reasoning:** Bounded retries handle brief failures within one operation, while
 the circuit breakers stop repeated calls to an unhealthy dependency. BullMQ
@@ -1309,7 +1332,7 @@ Use `pnpm ts-node seed/test-chromadb.ts` after production-style PDF seeding to i
    - ✅ ~~Exponential backoff for LLM API retries~~ **(IMPLEMENTED)**
    - [x] Circuit breaker for external services **(IMPLEMENTED)**
    - [x] Partial result storage (checkpoint evaluation progress) **(IMPLEMENTED)**
-   - Advanced rate limit handling with adaptive backoff
+   - [x] Advanced rate limit handling with adaptive backoff **(IMPLEMENTED)**
 
 3. **Monitoring & Observability**
    - Structured logging (Winston or Pino)

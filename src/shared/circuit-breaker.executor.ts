@@ -8,7 +8,7 @@ import {
   circuitBreaker,
   handleWhen,
 } from 'cockatiel';
-import { isRetryableError } from './retry.utils';
+import { isRateLimitError, isRetryableError } from './retry.utils';
 
 export type ExternalServiceName = 'gemini' | 'chroma' | 's3' | 'redis';
 
@@ -84,11 +84,16 @@ export class CircuitBreakerExecutor {
       return existing;
     }
 
-    const policy = circuitBreaker(handleWhen(isRetryableError), {
-      breaker: new ConsecutiveBreaker(this.failureThreshold),
-      halfOpenAfter: this.resetTimeoutMs,
-      halfOpenSampling: { calls: 1, threshold: 0 },
-    });
+    const policy = circuitBreaker(
+      handleWhen(
+        (error: unknown) => isRetryableError(error) && !isRateLimitError(error),
+      ),
+      {
+        breaker: new ConsecutiveBreaker(this.failureThreshold),
+        halfOpenAfter: this.resetTimeoutMs,
+        halfOpenSampling: { calls: 1, threshold: 0 },
+      },
+    );
 
     policy.onBreak(() => this.logTransition(service, 'open'));
     policy.onHalfOpen(() => this.logTransition(service, 'half-open'));

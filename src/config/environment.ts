@@ -105,6 +105,11 @@ export function validateEnvironment(
       'GEMINI_RETRY_DELAY_MS',
       500,
     ),
+    GEMINI_MAX_RETRY_DELAY_MS: parseNonNegativeNumber(
+      environment.GEMINI_MAX_RETRY_DELAY_MS,
+      'GEMINI_MAX_RETRY_DELAY_MS',
+      60_000,
+    ),
     GEMINI_TIMEOUT_MS: parseNonNegativeNumber(
       environment.GEMINI_TIMEOUT_MS,
       'GEMINI_TIMEOUT_MS',

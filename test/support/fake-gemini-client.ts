@@ -7,6 +7,7 @@ import type {
 export type FakeGeminiMode =
   | 'success'
   | 'transient'
+  | 'rate-limited'
   | 'persistent-transient'
   | 'empty'
   | 'malformed-json'
@@ -120,6 +121,11 @@ export class FakeGeminiClient implements GeminiClient {
       this.behaviors.set(operation, behavior);
       throw transientError(operation);
     }
+    if (behavior.mode === 'rate-limited' && behavior.failuresRemaining > 0) {
+      behavior.failuresRemaining -= 1;
+      this.behaviors.set(operation, behavior);
+      throw rateLimitError(operation);
+    }
     return behavior.mode;
   }
 }
@@ -129,6 +135,27 @@ function transientError(operation: GeminiOperation): Error {
     status: 503,
     code: 'ECONNRESET',
   });
+}
+
+function rateLimitError(operation: GeminiOperation): Error {
+  return Object.assign(
+    new Error(
+      JSON.stringify({
+        error: {
+          code: 429,
+          status: 'RESOURCE_EXHAUSTED',
+          message: `Fake rate limit for ${operation}`,
+          details: [
+            {
+              '@type': 'type.googleapis.com/google.rpc.RetryInfo',
+              retryDelay: '0.005s',
+            },
+          ],
+        },
+      }),
+    ),
+    { status: 429 },
+  );
 }
 
 export function deterministicVector(text: string): number[] {

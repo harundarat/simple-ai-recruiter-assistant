@@ -43,6 +43,164 @@ function getErrorCode(error: unknown): string | undefined {
   return typeof error.code === 'string' ? error.code : undefined;
 }
 
+function getHeaderValue(headers: unknown, name: string): unknown {
+  if (!isRecord(headers)) {
+    return undefined;
+  }
+
+  if (typeof headers.get === 'function') {
+    try {
+      return (headers.get as (headerName: string) => unknown)(name);
+    } catch {
+      return undefined;
+    }
+  }
+
+  const matchingEntry = Object.entries(headers).find(
+    ([headerName]) => headerName.toLowerCase() === name.toLowerCase(),
+  );
+  return matchingEntry?.[1];
+}
+
+function parseNonNegativeNumber(value: unknown): number | undefined {
+  if (typeof value !== 'number' && typeof value !== 'string') {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function parseRetryAfter(value: unknown, nowMs: number): number | undefined {
+  const seconds = parseNonNegativeNumber(value);
+  if (seconds !== undefined) {
+    return Math.round(seconds * 1_000);
+  }
+
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const date = Date.parse(value);
+  return Number.isNaN(date) ? undefined : Math.max(0, date - nowMs);
+}
+
+function parseProtobufDuration(value: unknown): number | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const match = /^(\d+(?:\.\d+)?)s$/.exec(value.trim());
+  if (!match) {
+    return undefined;
+  }
+
+  return Math.round(Number(match[1]) * 1_000);
+}
+
+function collectRetryHints(
+  value: unknown,
+  nowMs: number,
+  hints: number[],
+  depth = 0,
+): void {
+  if (depth > 8 || !isRecord(value)) {
+    return;
+  }
+
+  for (const [key, nestedValue] of Object.entries(value)) {
+    const normalizedKey = key.toLowerCase();
+    let hint: number | undefined;
+
+    if (
+      normalizedKey === 'retryafterms' ||
+      normalizedKey === 'retry-after-ms'
+    ) {
+      hint = parseNonNegativeNumber(nestedValue);
+    } else if (
+      normalizedKey === 'retryafter' ||
+      normalizedKey === 'retry-after'
+    ) {
+      hint = parseRetryAfter(nestedValue, nowMs);
+    } else if (normalizedKey === 'retrydelay') {
+      hint = parseProtobufDuration(nestedValue);
+    }
+
+    if (hint !== undefined) {
+      hints.push(Math.round(hint));
+    }
+
+    if (Array.isArray(nestedValue)) {
+      for (const item of nestedValue) {
+        collectRetryHints(item, nowMs, hints, depth + 1);
+      }
+    } else {
+      collectRetryHints(nestedValue, nowMs, hints, depth + 1);
+    }
+  }
+}
+
+function parseJson(value: unknown): unknown {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+export function isRateLimitError(error: unknown): boolean {
+  if (getStatusCode(error) === 429) {
+    return true;
+  }
+
+  const message = getErrorMessage(error).toLowerCase();
+  return (
+    message.includes('resource_exhausted') ||
+    message.includes('too many requests') ||
+    message.includes('rate limit')
+  );
+}
+
+export function extractRetryAfterMs(
+  error: unknown,
+  nowMs = Date.now(),
+): number | undefined {
+  if (!isRecord(error)) {
+    return undefined;
+  }
+
+  const hints: number[] = [];
+  const response = isRecord(error.response) ? error.response : undefined;
+  const headerSources = [error.headers, response?.headers];
+
+  for (const headers of headerSources) {
+    const retryAfterMs = parseNonNegativeNumber(
+      getHeaderValue(headers, 'retry-after-ms'),
+    );
+    if (retryAfterMs !== undefined) {
+      hints.push(Math.round(retryAfterMs));
+    }
+
+    const retryAfter = parseRetryAfter(
+      getHeaderValue(headers, 'retry-after'),
+      nowMs,
+    );
+    if (retryAfter !== undefined) {
+      hints.push(retryAfter);
+    }
+  }
+
+  collectRetryHints(error, nowMs, hints);
+  collectRetryHints(parseJson(error.message), nowMs, hints);
+  collectRetryHints(parseJson(response?.data), nowMs, hints);
+
+  return hints.length > 0 ? Math.max(...hints) : undefined;
+}
+
 export function isRetryableError(error: unknown): boolean {
   if (error === null || error === undefined) {
     return false;

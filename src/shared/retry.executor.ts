@@ -3,9 +3,11 @@ import {
   calculateRetryDelay,
   formatDuration,
   getErrorMessage,
+  isRateLimitError,
   isRetryableError,
   sleep,
 } from './retry.utils';
+import { RateLimitCoordinator } from './rate-limit.coordinator';
 
 export interface RetryOptions {
   maxAttempts: number;
@@ -18,11 +20,16 @@ export interface RetryOptions {
 
 export interface RetryExecutionOptions extends RetryOptions {
   shouldRetry?: (error: unknown) => boolean;
+  rateLimitKey?: string;
 }
 
 @Injectable()
 export class RetryExecutor {
   private readonly logger = new Logger(RetryExecutor.name);
+
+  constructor(
+    private readonly rateLimitCoordinator: RateLimitCoordinator = new RateLimitCoordinator(),
+  ) {}
 
   async execute<T>(
     operationName: string,
@@ -32,22 +39,47 @@ export class RetryExecutor {
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
+      if (options.rateLimitKey) {
+        await this.rateLimitCoordinator.wait(options.rateLimitKey);
+      }
+
       try {
-        return await this.withTimeout(operation(), options.timeoutMs);
+        const result = await this.withTimeout(operation(), options.timeoutMs);
+        if (options.rateLimitKey) {
+          this.rateLimitCoordinator.recordSuccess(options.rateLimitKey);
+        }
+        return result;
       } catch (error: unknown) {
         lastError = error;
+        const rateLimitDecision =
+          options.rateLimitKey && isRateLimitError(error)
+            ? this.rateLimitCoordinator.recordRateLimit(
+                options.rateLimitKey,
+                error,
+                attempt - 1,
+                options,
+              )
+            : undefined;
         const retryable =
           options.shouldRetry?.(error) ?? isRetryableError(error);
         if (!retryable || attempt === options.maxAttempts) {
           throw error;
         }
 
-        const delayMs = calculateRetryDelay(attempt - 1, options);
+        const delayMs =
+          rateLimitDecision?.delayMs ??
+          calculateRetryDelay(attempt - 1, options);
+        const providerHint =
+          rateLimitDecision?.providerDelayMs === undefined
+            ? ''
+            : `; provider requested ${formatDuration(rateLimitDecision.providerDelayMs)}`;
         this.logger.warn(
-          `${operationName} failed (attempt ${attempt}/${options.maxAttempts}); retrying after ${formatDuration(delayMs)}`,
+          `${operationName} failed (attempt ${attempt}/${options.maxAttempts}); retrying after ${formatDuration(delayMs)}${providerHint}`,
           { error: getErrorMessage(error) },
         );
-        await sleep(delayMs);
+        if (!rateLimitDecision) {
+          await sleep(delayMs);
+        }
       }
     }
 

@@ -108,6 +108,64 @@ describe('LLMService', () => {
     expect(generateContent).toHaveBeenCalledTimes(2);
   });
 
+  it('shares cooldown for Flash Lite operations but isolates other Gemini models', async () => {
+    jest.useFakeTimers();
+    try {
+      const sharedRetryExecutor = new RetryExecutor();
+      const modelRetryOptions = {
+        ...retryOptions,
+        maxAttempts: 1,
+        initialDelayMs: 100,
+        maxDelayMs: 100,
+      };
+      service = new LLMService(
+        client,
+        sharedRetryExecutor,
+        modelRetryOptions,
+        circuitBreaker,
+      );
+      const embedding = new GeminiEmbeddingFunction(
+        client,
+        sharedRetryExecutor,
+        modelRetryOptions,
+        circuitBreaker,
+      );
+      generateContent
+        .mockRejectedValueOnce(
+          Object.assign(new Error('RESOURCE_EXHAUSTED'), { status: 429 }),
+        )
+        .mockResolvedValue({ text: 'recovered' });
+      client.embed.mockResolvedValue([[0.1]]);
+
+      await expect(
+        service.callGeminiFlashLiteWithPDF(
+          'CV_EVALUATION',
+          Buffer.from('pdf'),
+          'Evaluate',
+        ),
+      ).rejects.toThrow('RESOURCE_EXHAUSTED');
+
+      await expect(
+        service.callGeminiFlash('FINAL_SYNTHESIS', { contents: 'prompt' }),
+      ).resolves.toEqual({ text: 'recovered' });
+      await expect(embedding.generate(['role'])).resolves.toEqual([[0.1]]);
+
+      const projectCall = service.callGeminiFlashLiteWithPDF(
+        'PROJECT_EVALUATION',
+        Buffer.from('pdf'),
+        'Evaluate',
+      );
+      await Promise.resolve();
+      expect(generateContent).toHaveBeenCalledTimes(2);
+
+      await jest.advanceTimersByTimeAsync(100);
+      await expect(projectCall).resolves.toEqual({ text: 'recovered' });
+      expect(generateContent).toHaveBeenCalledTimes(3);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('counts an exhausted two-attempt retry sequence as one breaker failure', async () => {
     generateContent.mockRejectedValue(
       Object.assign(new Error('Gemini unavailable'), { status: 503 }),

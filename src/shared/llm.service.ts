@@ -2,8 +2,10 @@ import { GenerateContentParameters } from '@google/genai';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import {
   GEMINI_CLIENT,
+  GEMINI_MODELS,
   GEMINI_RETRY_OPTIONS,
   GeminiGenerationOperation,
+  geminiRateLimitKey,
 } from './gemini-client';
 import type { GeminiClient } from './gemini-client';
 import { RetryExecutor } from './retry.executor';
@@ -42,7 +44,7 @@ export class LLMService {
         operation,
         () =>
           this.gemini.generateContent(operation, {
-            model: 'gemini-2.5-flash-lite',
+            model: GEMINI_MODELS.FLASH_LITE,
             contents: [
               {
                 role: 'user',
@@ -59,7 +61,10 @@ export class LLMService {
             ],
             config,
           }),
-        this.retryOptions,
+        {
+          ...this.retryOptions,
+          rateLimitKey: geminiRateLimitKey(GEMINI_MODELS.FLASH_LITE),
+        },
       ),
     );
   }
@@ -74,10 +79,13 @@ export class LLMService {
         operation,
         () =>
           this.gemini.generateContent(operation, {
-            model: 'gemini-2.5-flash',
+            model: GEMINI_MODELS.FLASH,
             ...params,
           }),
-        this.retryOptions,
+        {
+          ...this.retryOptions,
+          rateLimitKey: geminiRateLimitKey(GEMINI_MODELS.FLASH),
+        },
       ),
     );
   }

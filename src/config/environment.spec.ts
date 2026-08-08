@@ -24,6 +24,7 @@ describe('validateEnvironment', () => {
         CIRCUIT_BREAKER_ENABLED: true,
         CIRCUIT_BREAKER_FAILURE_THRESHOLD: 3,
         CIRCUIT_BREAKER_RESET_TIMEOUT_MS: 30_000,
+        GEMINI_MAX_RETRY_DELAY_MS: 60_000,
       }),
     );
   });
@@ -52,6 +53,7 @@ describe('validateEnvironment', () => {
         S3_ENDPOINT: 'http://localhost:19000',
         S3_FORCE_PATH_STYLE: 'true',
         GEMINI_RETRY_DELAY_MS: '5',
+        GEMINI_MAX_RETRY_DELAY_MS: '25',
         RETRY_JITTER_RATIO: '0',
       }),
     ).toEqual(
@@ -59,6 +61,7 @@ describe('validateEnvironment', () => {
         S3_ENDPOINT: 'http://localhost:19000',
         S3_FORCE_PATH_STYLE: true,
         GEMINI_RETRY_DELAY_MS: 5,
+        GEMINI_MAX_RETRY_DELAY_MS: 25,
         RETRY_JITTER_RATIO: 0,
       }),
     );

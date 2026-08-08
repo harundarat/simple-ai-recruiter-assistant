@@ -31,6 +31,10 @@ function transientFailure() {
   });
 }
 
+function rateLimitFailure() {
+  return Object.assign(new Error('RESOURCE_EXHAUSTED'), { status: 429 });
+}
+
 describe('CircuitBreakerExecutor', () => {
   beforeEach(() => {
     jest.useFakeTimers();
@@ -136,6 +140,20 @@ describe('CircuitBreakerExecutor', () => {
     await expect(executor.execute('redis', 'enqueue', operation)).resolves.toBe(
       'ok',
     );
+    expect(operation).toHaveBeenCalledTimes(4);
+  });
+
+  it('does not count rate limits toward the circuit threshold', async () => {
+    const executor = createExecutor();
+    const operation = jest
+      .fn<() => Promise<string>>()
+      .mockRejectedValue(rateLimitFailure());
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      await expect(
+        executor.execute('gemini', 'generate', operation),
+      ).rejects.toThrow('RESOURCE_EXHAUSTED');
+    }
     expect(operation).toHaveBeenCalledTimes(4);
   });
 

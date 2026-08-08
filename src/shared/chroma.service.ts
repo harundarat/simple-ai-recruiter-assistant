@@ -6,7 +6,12 @@ import {
   EmbeddingFunctionSpace,
 } from 'chromadb';
 import { ConfigService } from '@nestjs/config';
-import { GEMINI_CLIENT, GEMINI_RETRY_OPTIONS } from './gemini-client';
+import {
+  GEMINI_CLIENT,
+  GEMINI_MODELS,
+  GEMINI_RETRY_OPTIONS,
+  geminiRateLimitKey,
+} from './gemini-client';
 import type { GeminiClient } from './gemini-client';
 import { RetryExecutor } from './retry.executor';
 import type { RetryOptions } from './retry.executor';
@@ -26,11 +31,10 @@ export class GeminiEmbeddingFunction implements EmbeddingFunction {
 
   generate(texts: string[]): Promise<number[][]> {
     return this.circuitBreakerExecutor.execute('gemini', 'EMBEDDING', () =>
-      this.retryExecutor.execute(
-        'EMBEDDING',
-        () => this.client.embed(texts),
-        this.retryOptions,
-      ),
+      this.retryExecutor.execute('EMBEDDING', () => this.client.embed(texts), {
+        ...this.retryOptions,
+        rateLimitKey: geminiRateLimitKey(GEMINI_MODELS.EMBEDDING),
+      }),
     );
   }
 

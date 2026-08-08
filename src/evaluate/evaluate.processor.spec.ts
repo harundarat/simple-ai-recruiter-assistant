@@ -6,6 +6,7 @@ import { PrismaService } from '../shared/prisma.service';
 import { PipelineError, toPipelineError } from '../shared/pipeline-error';
 import { CircuitOpenError } from '../shared/circuit-breaker.executor';
 import type { EvaluationJobData } from '../shared/infrastructure.tokens';
+import { getLogContext } from '../shared/log-context';
 
 function createJob(attemptsMade = 0): Job<EvaluationJobData> {
   return {
@@ -14,7 +15,9 @@ function createJob(attemptsMade = 0): Job<EvaluationJobData> {
       jobTitle: 'Backend Developer',
       cvId: 1,
       projectReportId: 2,
+      requestId: 'request-123',
     },
+    id: 'evaluation-42',
     opts: { attempts: 3 },
     attemptsMade,
   } as Job<EvaluationJobData>;
@@ -37,12 +40,20 @@ describe('EvaluationProcessor', () => {
   });
 
   it('stores a completed evaluation and clears prior errors', async () => {
-    performEvaluation.mockResolvedValue({
-      cv_match_rate: 0.8,
-      cv_feedback: 'Strong CV',
-      project_score: 4.2,
-      project_feedback: 'Strong project',
-      overall_summary: 'Recommended',
+    performEvaluation.mockImplementation(() => {
+      expect(getLogContext()).toEqual({
+        requestId: 'request-123',
+        evaluationId: 42,
+        jobId: 'evaluation-42',
+        jobAttempt: 1,
+      });
+      return Promise.resolve({
+        cv_match_rate: 0.8,
+        cv_feedback: 'Strong CV',
+        project_score: 4.2,
+        project_feedback: 'Strong project',
+        overall_summary: 'Recommended',
+      });
     });
 
     await expect(processor.process(createJob())).resolves.toBeUndefined();
@@ -76,6 +87,29 @@ describe('EvaluationProcessor', () => {
         completed_at: expect.any(Date),
       },
     });
+    expect(getLogContext()).toBeUndefined();
+  });
+
+  it('uses the stable job ID when an older job has no request ID', async () => {
+    const job = createJob();
+    delete job.data.requestId;
+    performEvaluation.mockImplementation(() => {
+      expect(getLogContext()).toMatchObject({
+        requestId: 'evaluation-42',
+        evaluationId: 42,
+        jobId: 'evaluation-42',
+      });
+      return Promise.resolve({
+        cv_match_rate: 0.8,
+        cv_feedback: 'Strong CV',
+        project_score: 4.2,
+        project_feedback: 'Strong project',
+        overall_summary: 'Recommended',
+      });
+    });
+
+    await expect(processor.process(job)).resolves.toBeUndefined();
+    expect(getLogContext()).toBeUndefined();
   });
 
   it('returns a retryable failure to queued between Bull attempts', async () => {

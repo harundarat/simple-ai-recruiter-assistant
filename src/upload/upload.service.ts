@@ -7,7 +7,6 @@ import type {
   StoredFileReference,
 } from '../shared/infrastructure.tokens';
 import { PipelineError } from '../shared/pipeline-error';
-import { getErrorMessage } from '../shared/retry.utils';
 
 @Injectable()
 export class UploadService {
@@ -82,10 +81,14 @@ export class UploadService {
     try {
       await this.fileStore.deleteFiles(references);
     } catch (cleanupError: unknown) {
-      this.logger.error('Failed to clean up uploaded files', {
-        cause: getErrorMessage(cleanupError),
-        keys: references.map(({ key }) => key),
-      });
+      this.logger.error(
+        {
+          event: 'upload.cleanup_failed',
+          err: cleanupError,
+          keys: references.map(({ key }) => key),
+        },
+        'Failed to clean up uploaded files',
+      );
     }
   }
 }

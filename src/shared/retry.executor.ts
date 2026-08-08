@@ -2,7 +2,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import {
   calculateRetryDelay,
   formatDuration,
-  getErrorMessage,
   isRateLimitError,
   isRetryableError,
   sleep,
@@ -69,13 +68,17 @@ export class RetryExecutor {
         const delayMs =
           rateLimitDecision?.delayMs ??
           calculateRetryDelay(attempt - 1, options);
-        const providerHint =
-          rateLimitDecision?.providerDelayMs === undefined
-            ? ''
-            : `; provider requested ${formatDuration(rateLimitDecision.providerDelayMs)}`;
         this.logger.warn(
-          `${operationName} failed (attempt ${attempt}/${options.maxAttempts}); retrying after ${formatDuration(delayMs)}${providerHint}`,
-          { error: getErrorMessage(error) },
+          {
+            event: 'retry.scheduled',
+            operation: operationName,
+            attempt,
+            maxAttempts: options.maxAttempts,
+            delayMs,
+            providerDelayMs: rateLimitDecision?.providerDelayMs,
+            err: error,
+          },
+          'Operation failed; scheduling retry',
         );
         if (!rateLimitDecision) {
           await sleep(delayMs);

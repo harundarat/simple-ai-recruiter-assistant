@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { RetryOptions } from './retry.executor';
-import { extractRetryAfterMs, formatDuration, sleep } from './retry.utils';
+import { extractRetryAfterMs, sleep } from './retry.utils';
 
 interface RateLimitState {
   consecutiveRateLimits: number;
@@ -27,7 +27,12 @@ export class RateLimitCoordinator {
       }
 
       this.logger.warn(
-        `Rate limit cooldown for ${key}; waiting ${formatDuration(remainingMs)}`,
+        {
+          event: 'rate_limit.cooldown_wait',
+          rateLimitKey: key,
+          delayMs: remainingMs,
+        },
+        'Waiting for shared rate limit cooldown',
       );
       await sleep(remainingMs);
     }

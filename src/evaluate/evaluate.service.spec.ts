@@ -63,7 +63,7 @@ describe('EvaluateService.startEvaluation', () => {
 
   it('creates and enqueues an evaluation', async () => {
     await expect(
-      service.startEvaluation('Backend Developer', 1, 2),
+      service.startEvaluation('Backend Developer', 1, 2, 'request-123'),
     ).resolves.toEqual({ id: 42, status: 'queued' });
 
     expect(evaluationCreate).toHaveBeenCalledWith({
@@ -80,6 +80,7 @@ describe('EvaluateService.startEvaluation', () => {
         jobTitle: 'Backend Developer',
         cvId: 1,
         projectReportId: 2,
+        requestId: 'request-123',
       },
       'evaluation-42',
     );
@@ -89,7 +90,7 @@ describe('EvaluateService.startEvaluation', () => {
     cvFindUnique.mockResolvedValue(null);
 
     await expect(
-      service.startEvaluation('Backend Developer', 1, 2),
+      service.startEvaluation('Backend Developer', 1, 2, 'request-123'),
     ).rejects.toThrow(new BadRequestException('CV not found'));
     expect(evaluationCreate).not.toHaveBeenCalled();
   });
@@ -98,7 +99,7 @@ describe('EvaluateService.startEvaluation', () => {
     projectFindUnique.mockResolvedValue({ id: 2, cv_id: 999 });
 
     await expect(
-      service.startEvaluation('Backend Developer', 1, 2),
+      service.startEvaluation('Backend Developer', 1, 2, 'request-123'),
     ).rejects.toThrow('Project Report does not belong to the specified CV');
     expect(evaluationCreate).not.toHaveBeenCalled();
   });
@@ -107,7 +108,7 @@ describe('EvaluateService.startEvaluation', () => {
     queueAdd.mockRejectedValue(new Error('Redis unavailable'));
 
     await expect(
-      service.startEvaluation('Backend Developer', 1, 2),
+      service.startEvaluation('Backend Developer', 1, 2, 'request-123'),
     ).rejects.toThrow(ServiceUnavailableException);
     expect(evaluationUpdate).toHaveBeenCalledWith({
       where: { id: 42 },
@@ -129,12 +130,12 @@ describe('EvaluateService.startEvaluation', () => {
 
     for (let request = 0; request < 3; request += 1) {
       await expect(
-        service.startEvaluation('Backend Developer', 1, 2),
+        service.startEvaluation('Backend Developer', 1, 2, 'request-123'),
       ).rejects.toThrow(ServiceUnavailableException);
     }
     let fourthError: unknown;
     try {
-      await service.startEvaluation('Backend Developer', 1, 2);
+      await service.startEvaluation('Backend Developer', 1, 2, 'request-123');
     } catch (error: unknown) {
       fourthError = error;
     }

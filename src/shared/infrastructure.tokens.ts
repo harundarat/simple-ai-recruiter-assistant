@@ -29,6 +29,7 @@ export interface EvaluationJobData {
   jobTitle: string;
   cvId: number;
   projectReportId: number;
+  requestId?: string;
 }
 
 export interface EvaluationQueue {

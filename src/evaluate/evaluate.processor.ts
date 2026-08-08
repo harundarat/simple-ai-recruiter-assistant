@@ -3,9 +3,9 @@ import { Job, UnrecoverableError } from 'bullmq';
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../shared/prisma.service';
 import { EvaluateService } from './evaluate.service';
-import { getErrorMessage } from '../shared/retry.utils';
 import { EvaluationJobData } from '../shared/infrastructure.tokens';
 import { PipelineError } from '../shared/pipeline-error';
+import { runWithLogContext } from '../shared/log-context';
 
 @Processor('evaluation', { concurrency: 1 })
 @Injectable()
@@ -20,6 +20,20 @@ export class EvaluationProcessor extends WorkerHost {
   }
 
   async process(job: Job<EvaluationJobData>): Promise<void> {
+    const evaluationId = job.data.evaluationId;
+    const jobId = String(job.id ?? `evaluation-${evaluationId}`);
+    return runWithLogContext(
+      {
+        requestId: job.data.requestId ?? jobId,
+        evaluationId,
+        jobId,
+        jobAttempt: job.attemptsMade + 1,
+      },
+      () => this.processWithContext(job),
+    );
+  }
+
+  private async processWithContext(job: Job<EvaluationJobData>): Promise<void> {
     const { evaluationId, jobTitle, cvId, projectReportId } = job.data;
 
     await this.prismaService.evaluation.update({
@@ -54,7 +68,10 @@ export class EvaluationProcessor extends WorkerHost {
           completed_at: new Date(),
         },
       });
-      this.logger.log(`Evaluation ${evaluationId} completed successfully`);
+      this.logger.log(
+        { event: 'evaluation.completed', evaluationId },
+        'Evaluation completed successfully',
+      );
     } catch (cause: unknown) {
       const error =
         cause instanceof PipelineError
@@ -76,14 +93,17 @@ export class EvaluationProcessor extends WorkerHost {
       const willRetry = error.retryable && !finalAttempt;
 
       this.logger.error(
-        `Evaluation ${evaluationId} failed on processing attempt ${retryCount}`,
         {
+          event: 'evaluation.processing_failed',
+          evaluationId,
+          processingAttempt: retryCount,
           errorCode: error.errorCode,
           failedStage: error.failedStage,
           retryable: error.retryable,
           willRetry,
-          cause: getErrorMessage(error.cause ?? cause),
+          err: error.cause ?? cause,
         },
+        'Evaluation processing attempt failed',
       );
 
       await this.prismaService.evaluation.update({

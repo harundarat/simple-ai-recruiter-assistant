@@ -15,6 +15,7 @@ import { INestApplication } from '@nestjs/common';
 import { Server } from 'node:http';
 import { resolve } from 'node:path';
 import request from 'supertest';
+import { Logger } from 'nestjs-pino';
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/shared/prisma.service';
 import { S3Service } from '../src/shared/s3.service';
@@ -96,6 +97,7 @@ class ControlledKnowledgeBase implements KnowledgeBase {
 class ControlledEvaluationQueue implements EvaluationQueue {
   failuresRemaining = 0;
   enqueueAttempts = 0;
+  lastEnqueuedData: EvaluationJobData | undefined;
 
   constructor(private readonly delegate: BullEvaluationQueueGateway) {}
 
@@ -105,6 +107,7 @@ class ControlledEvaluationQueue implements EvaluationQueue {
       this.failuresRemaining -= 1;
       throw Object.assign(new Error('Fake Redis unavailable'), { status: 503 });
     }
+    this.lastEnqueuedData = data;
     await this.delegate.enqueue(data, jobId);
   }
 }
@@ -113,6 +116,11 @@ interface UploadResponse {
   cv_id: number;
   project_report_id: number;
   message: string;
+}
+
+interface StartEvaluationResponse {
+  id: number;
+  status: 'queued';
 }
 
 interface ResultResponse {
@@ -168,6 +176,7 @@ describe('Evaluation pipeline with real local infrastructure', () => {
       .compile();
 
     app = moduleFixture.createNestApplication<Server>();
+    app.useLogger(app.get(Logger));
     app.useGlobalPipes(
       new ValidationPipe({
         forbidNonWhitelisted: true,
@@ -209,6 +218,7 @@ describe('Evaluation pipeline with real local infrastructure', () => {
     knowledgeBase.transientFailuresRemaining = 0;
     evaluationQueue.failuresRemaining = 0;
     evaluationQueue.enqueueAttempts = 0;
+    evaluationQueue.lastEnqueuedData = undefined;
   });
 
   afterAll(async () => {
@@ -270,6 +280,29 @@ describe('Evaluation pipeline with real local infrastructure', () => {
         project_score: 4.4,
         project_feedback: 'Deterministic project feedback',
       }),
+    });
+  });
+
+  it('preserves the HTTP request ID in the evaluation job', async () => {
+    const uploaded = await uploadPair();
+    const response = await request(app.getHttpServer())
+      .post('/evaluate')
+      .set('X-Request-ID', 'e2e-request-123')
+      .send({
+        job_title: 'Backend Developer',
+        cv_id: uploaded.cv_id,
+        project_report_id: uploaded.project_report_id,
+      })
+      .expect(201);
+    const body = response.body as StartEvaluationResponse;
+
+    expect(response.headers['x-request-id']).toBe('e2e-request-123');
+    expect(evaluationQueue.lastEnqueuedData).toMatchObject({
+      requestId: 'e2e-request-123',
+      evaluationId: body.id,
+    });
+    await expect(pollResult(body.id)).resolves.toMatchObject({
+      status: 'completed',
     });
   });
 

@@ -36,7 +36,13 @@ export class LLMService {
     config?: LLMCallParameters['config'],
   ) {
     this.logger.debug(
-      `Calling Gemini Flash Lite for ${operation} (PDF size: ${pdfBuffer.length} bytes)`,
+      {
+        event: 'gemini.request_started',
+        operation,
+        model: GEMINI_MODELS.FLASH_LITE,
+        pdfSizeBytes: pdfBuffer.length,
+      },
+      'Calling Gemini generation API',
     );
 
     return this.circuitBreakerExecutor.execute('gemini', operation, () =>
@@ -73,7 +79,14 @@ export class LLMService {
     operation: Extract<GeminiGenerationOperation, 'FINAL_SYNTHESIS'>,
     params: LLMCallParameters,
   ) {
-    this.logger.debug(`Calling Gemini Flash for ${operation}`);
+    this.logger.debug(
+      {
+        event: 'gemini.request_started',
+        operation,
+        model: GEMINI_MODELS.FLASH,
+      },
+      'Calling Gemini generation API',
+    );
     return this.circuitBreakerExecutor.execute('gemini', operation, () =>
       this.retryExecutor.execute(
         operation,

@@ -8,7 +8,6 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { toPipelineError } from '../shared/pipeline-error';
-import { getErrorMessage } from '../shared/retry.utils';
 
 @Catch()
 export class UploadExceptionFilter implements ExceptionFilter {
@@ -30,9 +29,15 @@ export class UploadExceptionFilter implements ExceptionFilter {
     }
 
     const error = toPipelineError(exception, 'LOAD_FILES');
-    this.logger.error('Upload failed', {
-      cause: getErrorMessage(error.cause ?? exception),
-    });
+    this.logger.error(
+      {
+        event: 'upload.failed',
+        errorCode: error.errorCode,
+        failedStage: error.failedStage,
+        err: error.cause ?? exception,
+      },
+      'Upload failed',
+    );
     response.status(HttpStatus.SERVICE_UNAVAILABLE).json({
       statusCode: HttpStatus.SERVICE_UNAVAILABLE,
       error_code: error.errorCode,

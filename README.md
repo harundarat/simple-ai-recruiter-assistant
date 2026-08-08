@@ -286,6 +286,7 @@ S3_FORCE_PATH_STYLE="true"
 # Application
 PORT="3000"
 NODE_ENV="development"
+LOG_LEVEL="info"
 
 # External service circuit breakers
 CIRCUIT_BREAKER_ENABLED="true"
@@ -303,6 +304,13 @@ SDK exposes one; otherwise the cooldown grows adaptively from
 `GEMINI_RETRY_DELAY_MS` up to `GEMINI_MAX_RETRY_DELAY_MS`. Jitter is added only
 above the minimum cooldown; provider hints are honored within the configured
 maximum delay.
+
+Application logs are emitted as newline-delimited JSON to stdout through Pino.
+`LOG_LEVEL` accepts `fatal`, `error`, `warn`, `info`, `debug`, `trace`, or
+`silent` and defaults to `info`. Each HTTP request accepts a valid
+`X-Request-ID` or receives a generated UUID; the same ID is returned in the
+response and propagated to evaluation jobs. Request bodies, query parameters,
+headers, uploaded document contents, and credentials are not logged.
 
 ### 2. Run database migrations
 
@@ -1335,7 +1343,7 @@ Use `pnpm ts-node seed/test-chromadb.ts` after production-style PDF seeding to i
    - [x] Advanced rate limit handling with adaptive backoff **(IMPLEMENTED)**
 
 3. **Monitoring & Observability**
-   - Structured logging (Winston or Pino)
+   - [x] Structured logging with Pino and end-to-end request correlation **(IMPLEMENTED)**
    - Metrics (Prometheus)
    - Distributed tracing (OpenTelemetry)
    - Health check endpoints

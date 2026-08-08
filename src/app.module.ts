@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { UploadModule } from './upload/upload.module';
@@ -8,6 +9,8 @@ import { SharedModule } from './shared/shared.module';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { BullModule } from '@nestjs/bullmq';
 import { validateEnvironment } from './config/environment';
+import { LoggerErrorInterceptor, LoggerModule } from 'nestjs-pino';
+import { createPinoHttpOptions } from './config/logging';
 
 @Module({
   imports: [
@@ -15,6 +18,16 @@ import { validateEnvironment } from './config/environment';
       cache: true,
       isGlobal: true,
       validate: validateEnvironment,
+    }),
+    LoggerModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        pinoHttp: createPinoHttpOptions({
+          environment: configService.get<string>('NODE_ENV') ?? 'development',
+          level: configService.getOrThrow('LOG_LEVEL'),
+        }),
+      }),
     }),
     BullModule.forRootAsync({
       inject: [ConfigService],
@@ -31,6 +44,12 @@ import { validateEnvironment } from './config/environment';
     ResultModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: LoggerErrorInterceptor,
+    },
+  ],
 })
 export class AppModule {}

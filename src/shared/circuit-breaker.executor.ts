@@ -67,11 +67,15 @@ export class CircuitBreakerExecutor {
       );
     } catch (error: unknown) {
       if (error instanceof BrokenCircuitError) {
-        this.logger.warn('External service call short-circuited', {
-          circuitState: 'open',
-          service,
-          operationName,
-        });
+        this.logger.warn(
+          {
+            event: 'circuit.short_circuited',
+            circuitState: 'open',
+            service,
+            operationName,
+          },
+          'External service call short-circuited',
+        );
         throw new CircuitOpenError(service, operationName, error);
       }
       throw error;
@@ -108,15 +112,17 @@ export class CircuitBreakerExecutor {
   ): void {
     const context = this.operationContext.getStore();
     const details = {
+      event:
+        circuitState === 'open' ? 'circuit.opened' : 'circuit.state_changed',
       circuitState,
       service,
       operationName: context?.operationName ?? 'unknown',
     };
 
     if (circuitState === 'open') {
-      this.logger.warn('External service circuit opened', details);
+      this.logger.warn(details, 'External service circuit opened');
       return;
     }
-    this.logger.log('External service circuit state changed', details);
+    this.logger.log(details, 'External service circuit state changed');
   }
 }

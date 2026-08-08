@@ -25,7 +25,6 @@ import {
   FinalSynthesisResultSchema,
 } from './dto/final-synthesis-result.dto';
 import { EvaluationStatus } from '../generated/prisma/enums';
-import { getErrorMessage } from '../shared/retry.utils';
 import {
   EVALUATION_QUEUE,
   FILE_STORE,
@@ -65,6 +64,7 @@ export class EvaluateService {
     jobTitle: string,
     cvId: number,
     projectReportId: number,
+    requestId: string,
   ): Promise<{ id: number; status: EvaluationStatus }> {
     const [cv, projectReport] = await Promise.all([
       this.prismaService.cV.findUnique({ where: { id: cvId } }),
@@ -101,7 +101,13 @@ export class EvaluateService {
           'ENQUEUE',
           () =>
             this.evaluationQueue.enqueue(
-              { evaluationId: evaluation.id, jobTitle, cvId, projectReportId },
+              {
+                evaluationId: evaluation.id,
+                jobTitle,
+                cvId,
+                projectReportId,
+                requestId,
+              },
               jobId,
             ),
           {
@@ -120,10 +126,14 @@ export class EvaluateService {
       );
     } catch (cause: unknown) {
       const error = toPipelineError(cause, 'ENQUEUE');
-      this.logger.error('Failed to enqueue evaluation', {
-        evaluationId: evaluation.id,
-        cause: getErrorMessage(cause),
-      });
+      this.logger.error(
+        {
+          event: 'evaluation.enqueue_failed',
+          evaluationId: evaluation.id,
+          err: cause,
+        },
+        'Failed to enqueue evaluation',
+      );
       await this.prismaService.evaluation.update({
         where: { id: evaluation.id },
         data: {
@@ -179,11 +189,23 @@ export class EvaluateService {
     );
 
     if (checkpoint.cv_checkpoint !== null && !storedCv.success) {
-      this.logger.warn(`Ignoring invalid CV checkpoint for ${evaluationId}`);
+      this.logger.warn(
+        {
+          event: 'evaluation.checkpoint_invalid',
+          evaluationId,
+          checkpoint: 'cv',
+        },
+        'Ignoring invalid evaluation checkpoint',
+      );
     }
     if (checkpoint.project_checkpoint !== null && !storedProject.success) {
       this.logger.warn(
-        `Ignoring invalid project checkpoint for ${evaluationId}`,
+        {
+          event: 'evaluation.checkpoint_invalid',
+          evaluationId,
+          checkpoint: 'project',
+        },
+        'Ignoring invalid evaluation checkpoint',
       );
     }
 
@@ -470,9 +492,14 @@ Based on the above evaluations, provide a comprehensive final synthesis that int
     try {
       return await operation();
     } catch (error: unknown) {
-      this.logger.error(`${stage} failed`, {
-        cause: getErrorMessage(error),
-      });
+      this.logger.error(
+        {
+          event: 'evaluation.stage_failed',
+          stage,
+          err: error,
+        },
+        'Evaluation stage failed',
+      );
       throw toPipelineError(error, stage);
     }
   }

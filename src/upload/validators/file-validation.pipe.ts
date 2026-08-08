@@ -12,7 +12,6 @@ import {
 } from '../constants/file-validation.constants';
 import { FILE_STORE } from '../../shared/infrastructure.tokens';
 import type { FileStore } from '../../shared/infrastructure.tokens';
-import { getErrorMessage } from '../../shared/retry.utils';
 
 export interface FileValidationOptions {
   maxSize?: number; // in bytes
@@ -176,10 +175,14 @@ export class FilesValidationPipe implements PipeTransform {
       try {
         await this.fileStore?.deleteFiles(references);
       } catch (cleanupError: unknown) {
-        this.logger.error('Failed to clean up files after upload validation', {
-          cause: getErrorMessage(cleanupError),
-          keys: references.map(({ key }) => key),
-        });
+        this.logger.error(
+          {
+            event: 'upload.validation_cleanup_failed',
+            err: cleanupError,
+            keys: references.map(({ key }) => key),
+          },
+          'Failed to clean up files after upload validation',
+        );
       }
     }
     throw validationError;

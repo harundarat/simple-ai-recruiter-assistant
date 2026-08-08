@@ -1,3 +1,5 @@
+import { LOG_LEVELS, type LogLevel } from './logging';
+
 const REQUIRED_ENVIRONMENT_VARIABLES = [
   'DATABASE_URL',
   'S3_REGION',
@@ -57,6 +59,14 @@ function parseBoolean(value: unknown, name: string, defaultValue: boolean) {
   throw new Error(`${name} must be true or false`);
 }
 
+function parseLogLevel(value: unknown): LogLevel {
+  const level = value === undefined || value === '' ? 'info' : value;
+  if (typeof level !== 'string' || !LOG_LEVELS.includes(level as LogLevel)) {
+    throw new Error(`LOG_LEVEL must be one of: ${LOG_LEVELS.join(', ')}`);
+  }
+  return level as LogLevel;
+}
+
 export function validateEnvironment(
   environment: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -73,6 +83,8 @@ export function validateEnvironment(
 
   return {
     ...environment,
+    NODE_ENV: environment.NODE_ENV || 'development',
+    LOG_LEVEL: parseLogLevel(environment.LOG_LEVEL),
     PORT: parsePort(environment.PORT, 'PORT', 3000),
     REDIS_HOST: environment.REDIS_HOST || 'localhost',
     REDIS_PORT: parsePort(environment.REDIS_PORT, 'REDIS_PORT', 6379),

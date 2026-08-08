@@ -4,7 +4,6 @@ import {
   calculateBackoffDelay,
   createErrorContext,
   formatDuration,
-  getErrorMessage,
   isRetryableError,
   sleep,
 } from './retry.utils';
@@ -60,7 +59,13 @@ export function Retry(config: RetryConfig = DEFAULT_RETRY_CONFIG) {
         try {
           if (attempt > 0) {
             logger.log(
-              `Retry attempt ${attempt}/${config.maxRetries} for ${methodName}`,
+              {
+                event: 'retry.attempt_started',
+                operation: methodName,
+                retryAttempt: attempt,
+                maxRetries: config.maxRetries,
+              },
+              'Retry attempt started',
             );
           }
 
@@ -69,7 +74,12 @@ export function Retry(config: RetryConfig = DEFAULT_RETRY_CONFIG) {
 
           if (attempt > 0) {
             logger.log(
-              `${methodName} succeeded after ${attempt} retry attempt(s)`,
+              {
+                event: 'retry.succeeded',
+                operation: methodName,
+                retryAttempts: attempt,
+              },
+              'Operation succeeded after retry',
             );
           }
 
@@ -86,26 +96,34 @@ export function Retry(config: RetryConfig = DEFAULT_RETRY_CONFIG) {
 
           if (isLastAttempt || !shouldRetry) {
             logger.error(
-              shouldRetry
-                ? `${methodName} failed after ${config.maxRetries + 1} attempts`
-                : `${methodName} failed with a non-retryable error`,
               {
-                error: getErrorMessage(error),
+                event: 'retry.exhausted',
+                operation: methodName,
+                attempts: attempt + 1,
+                retryable: shouldRetry,
                 statusCode: errorContext.statusCode,
                 errorCode: errorContext.errorCode,
+                err: error,
               },
+              shouldRetry
+                ? 'Operation failed after all retry attempts'
+                : 'Operation failed with a non-retryable error',
             );
             throw error;
           }
 
           const delayMs = calculateBackoffDelay(attempt, config);
           logger.warn(
-            `${methodName} failed (attempt ${attempt + 1}/${config.maxRetries + 1}); retrying after ${formatDuration(delayMs)}`,
             {
-              error: getErrorMessage(error),
-              nextRetryIn: formatDuration(delayMs),
+              event: 'retry.scheduled',
+              operation: methodName,
+              attempt: attempt + 1,
+              maxAttempts: config.maxRetries + 1,
+              delayMs,
               retriesRemaining: config.maxRetries - attempt,
+              err: error,
             },
+            'Operation failed; scheduling retry',
           );
           await sleep(delayMs);
         }

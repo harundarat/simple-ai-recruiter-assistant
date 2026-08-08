@@ -21,6 +21,8 @@ describe('validateEnvironment', () => {
         CHROMA_PORT: 8000,
         CHROMA_COLLECTION_NAME: 'ground_truth',
         S3_FORCE_PATH_STYLE: false,
+        NODE_ENV: 'development',
+        LOG_LEVEL: 'info',
         CIRCUIT_BREAKER_ENABLED: true,
         CIRCUIT_BREAKER_FAILURE_THRESHOLD: 3,
         CIRCUIT_BREAKER_RESET_TIMEOUT_MS: 30_000,
@@ -81,6 +83,20 @@ describe('validateEnvironment', () => {
         REDIS_PORT: 6380,
         CHROMA_PORT: 8100,
       }),
+    );
+  });
+
+  it('parses a configured log level', () => {
+    expect(
+      validateEnvironment({ ...validEnvironment, LOG_LEVEL: 'debug' }),
+    ).toEqual(expect.objectContaining({ LOG_LEVEL: 'debug' }));
+  });
+
+  it('rejects an unsupported log level', () => {
+    expect(() =>
+      validateEnvironment({ ...validEnvironment, LOG_LEVEL: 'verbose' }),
+    ).toThrow(
+      'LOG_LEVEL must be one of: fatal, error, warn, info, debug, trace, silent',
     );
   });
 
